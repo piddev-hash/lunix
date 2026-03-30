@@ -21,6 +21,7 @@
 #include <errno.h>
 #include <sched.h>
 #include <string.h>
+#include <lunix/kernel/panic.h>
 #include <lunix/kernel/process.h>
 #include <lunix/kernel/registers.h>
 #include <lunix/kernel/worker.h>
@@ -28,6 +29,8 @@
 Thread* Thread::_current;
 Thread* Thread::idleThread;
 static ThreadList threadList;
+static bool deferKernelThreadStart = true;
+static Thread* firstDeferredKernelThread;
 
 __fpu_t initFpu;
 
@@ -74,6 +77,48 @@ void Thread::addThread(Thread* thread) {
     Interrupts::enable();
 }
 
+Thread* Thread::createKernelThread(void (*entry)(void*), void* argument) {
+    Thread* thread = xnew Thread(Thread::idleThread->process);
+    vaddr_t stack = kernelSpace->mapMemory(PAGESIZE, PROT_READ | PROT_WRITE);
+    if (!stack) PANIC("Failed to allocate kernel thread stack");
+
+    InterruptContext* context = (InterruptContext*)
+            (stack + PAGESIZE - sizeof(InterruptContext));
+    *context = {};
+
+#ifdef __i386__
+    uintptr_t* initialStack = (uintptr_t*) (stack + PAGESIZE -
+            2 * sizeof(void*));
+    initialStack[0] = 0;
+    initialStack[1] = (uintptr_t) argument;
+    context->eip = (vaddr_t) entry;
+    context->cs = 0x8;
+    context->eflags = 0x200;
+    context->esp = (vaddr_t) initialStack;
+    context->ss = 0x10;
+#elif defined(__x86_64__)
+    context->rip = (vaddr_t) entry;
+    context->cs = 0x8;
+    context->rdi = (uintptr_t) argument;
+    context->rflags = 0x200;
+    context->rsp = stack + PAGESIZE - sizeof(void*);
+    context->ss = 0x10;
+#else
+#  error "InterruptContext for kernel thread is uninitialized."
+#endif
+
+    thread->updateContext(stack, context, &initFpu);
+    if (deferKernelThreadStart) {
+        Interrupts::disable();
+        thread->next = firstDeferredKernelThread;
+        firstDeferredKernelThread = thread;
+        Interrupts::enable();
+    } else {
+        Thread::addThread(thread);
+    }
+    return thread;
+}
+
 void Thread::removeThread(Thread* thread) {
     threadList.remove(*thread);
 }
@@ -106,6 +151,23 @@ InterruptContext* Thread::schedule(InterruptContext* context) {
     _current->checkSigalarm(true);
     _current->updatePendingSignals();
     return _current->interruptContext;
+}
+
+void Thread::startDeferredKernelThreads() {
+    deferKernelThreadStart = false;
+
+    Interrupts::disable();
+    Thread* thread = firstDeferredKernelThread;
+    firstDeferredKernelThread = nullptr;
+    Interrupts::enable();
+
+    while (thread) {
+        Thread* next = thread->next;
+        thread->next = nullptr;
+        thread->prev = nullptr;
+        Thread::addThread(thread);
+        thread = next;
+    }
 }
 
 static void deleteThread(void* thread) {

@@ -50,6 +50,7 @@ struct dxui_context {
     const Backend* backend;
     Window* firstWindow;
     dxui_dim displayDim;
+    unsigned int themeFlags;
     dxui_pos mouseDownPos;
     bool mouseDown;
     char vgafont[4096];

@@ -23,10 +23,13 @@
 #include <sys/guimsg.h>
 #include <lunix/mouse.h>
 #include "context.h"
+#include "theme.h"
 
 static Window* getWindow(dxui_context* context, unsigned int id);
 static void handleMouseEvent(dxui_context* context, Window* window,
         dxui_mouse_event event);
+static void refreshTheme(dxui_context* context);
+static void refreshThemedControl(Control* control, unsigned int themeFlags);
 
 static void handleCloseButton(dxui_context* context, size_t length,
         struct gui_event_window_close_button* msg);
@@ -304,8 +307,34 @@ static void handleStatus(dxui_context* context, size_t length,
         struct gui_event_status* msg) {
     if (length < sizeof(*msg)) return;
 
+    bool themeChanged = context->themeFlags != msg->flags;
+    context->themeFlags = msg->flags;
     context->displayDim.width = msg->display_width;
     context->displayDim.height = msg->display_height;
+    if (themeChanged) {
+        refreshTheme(context);
+    }
+}
+
+static void refreshTheme(dxui_context* context) {
+    for (Window* window = context->firstWindow; window; window = window->next) {
+        refreshThemedControl(&window->control, context->themeFlags);
+
+        for (Control* control = window->container.firstControl; control;
+                control = control->next) {
+            refreshThemedControl(control, context->themeFlags);
+        }
+
+        dxui_update(DXUI_AS_WINDOW(window));
+    }
+}
+
+static void refreshThemedControl(Control* control, unsigned int themeFlags) {
+    if (!control->useThemeBackground || !control->class->getThemeBackground) {
+        return;
+    }
+
+    control->background = control->class->getThemeBackground(themeFlags);
 }
 
 static void handleWindowCreated(dxui_context* context, size_t length,

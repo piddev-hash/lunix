@@ -49,6 +49,8 @@ void handleKey(dxui_control* control, dxui_key_event* event) {
                 execl("/bin/terminal", "terminal", NULL);
                 _Exit(1);
             }
+        } else if (event->key == KB_D) {
+            toggleGuiTheme();
         } else if (event->key == KB_Q) {
             for (struct Window* win = topWindow; win; win = win->below) {
                 closeWindow(win);

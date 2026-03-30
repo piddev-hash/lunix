@@ -20,10 +20,16 @@
 #include <lunix/kernel/ahci.h>
 #include <lunix/kernel/ata.h>
 #include <lunix/kernel/bga.h>
+#include <lunix/kernel/ehci.h>
+#include <lunix/kernel/hda.h>
 #include <lunix/kernel/log.h>
 #include <lunix/kernel/pci.h>
 #include <lunix/kernel/portio.h>
+#include <lunix/kernel/rtl8139.h>
+#include <lunix/kernel/rtl8169.h>
+#include <lunix/kernel/uhci.h>
 #include <lunix/kernel/virtualbox.h>
+#include <lunix/kernel/xhci.h>
 
 #define CONFIG_ADDRESS 0xCF8
 #define CONFIG_DATA 0xCFC
@@ -136,6 +142,8 @@ static void checkFunction(uint8_t bus, uint8_t device, uint8_t function,
         uint16_t vendor) {
     uint16_t deviceId = Pci::readConfig(bus, device, function,
             offsetof(PciHeader, deviceId));
+    uint8_t progIf = Pci::readConfig(bus, device, function,
+            offsetof(PciHeader, progIf));
     uint8_t classCode = Pci::readConfig(bus, device, function,
             offsetof(PciHeader, classCode));
     uint8_t subclass = Pci::readConfig(bus, device, function,
@@ -155,12 +163,37 @@ static void checkFunction(uint8_t bus, uint8_t device, uint8_t function,
         VirtualBox::initialize(bus, device, function);
     }
 
+    if (vendor == 0x10EC && (deviceId == 0x8138 || deviceId == 0x8139)) {
+        Rtl8139::initialize(bus, device, function);
+    }
+
+    if (vendor == 0x10EC && (deviceId == 0x8161 || deviceId == 0x8162 ||
+            deviceId == 0x8167 || deviceId == 0x8168 || deviceId == 0x8169)) {
+        Rtl8169::initialize(bus, device, function);
+    }
+
     if (classCode == 0x01 && subclass == 0x01) {
         AtaController::initialize(bus, device, function);
     }
 
     if (classCode == 0x01 && subclass == 0x06) {
         Ahci::initialize(bus, device, function);
+    }
+
+    if (classCode == 0x04 && subclass == 0x03) {
+        Hda::initialize(bus, device, function);
+    }
+
+    if (classCode == 0x0C && subclass == 0x03 && progIf == 0x00) {
+        Uhci::initialize(bus, device, function);
+    }
+
+    if (classCode == 0x0C && subclass == 0x03 && progIf == 0x20) {
+        Ehci::initialize(bus, device, function);
+    }
+
+    if (classCode == 0x0C && subclass == 0x03 && progIf == 0x30) {
+        Xhci::initialize(bus, device, function);
     }
 
     // Scan PCI bridges for more devices.

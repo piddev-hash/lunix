@@ -27,6 +27,7 @@ dxui_context* context;
 dxui_window* compositorWindow;
 dxui_color* lfb;
 dxui_dim guiDim;
+unsigned int guiThemeFlags;
 static volatile sig_atomic_t winchReceived;
 
 static void shutdown(void) {
@@ -76,7 +77,8 @@ static void initialize(void) {
     compositorWindow = dxui_create_window(context, rect, "GUI",
             DXUI_WINDOW_COMPOSITOR);
     if (!compositorWindow) dxui_panic(context, "Failed to create a window");
-    dxui_set_background(compositorWindow, backgroundColor);
+    dxui_set_background(compositorWindow,
+            gui_theme_desktop_background(guiThemeFlags));
 
     dxui_set_event_handler(compositorWindow, DXUI_EVENT_MOUSE, handleMouse);
     dxui_set_event_handler(compositorWindow, DXUI_EVENT_KEY, handleKey);
@@ -93,6 +95,18 @@ static void initialize(void) {
 
     initializeDisplay();
     initializeServer();
+}
+
+void toggleGuiTheme(void) {
+    guiThemeFlags ^= GUI_STATUS_DARK_THEME;
+    dxui_set_background(compositorWindow,
+            gui_theme_desktop_background(guiThemeFlags));
+    refreshDesktopTheme();
+    refreshWindowTheme();
+
+    dxui_rect rect = { .pos = {0, 0}, .dim = guiDim };
+    addDamageRect(rect);
+    broadcastStatusEvent();
 }
 
 int main(void) {

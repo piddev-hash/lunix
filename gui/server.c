@@ -56,7 +56,7 @@ static void acceptConnections(void) {
     addConnection(connection);
 
     struct gui_event_status msg;
-    msg.flags = 0;
+    msg.flags = guiThemeFlags;
     msg.display_width = guiDim.width;
     msg.display_height = guiDim.height;
     sendEvent(connection, GUI_EVENT_STATUS, sizeof(msg), &msg);
@@ -84,7 +84,7 @@ static void addConnection(struct Connection* connection) {
 
 void broadcastStatusEvent(void) {
     struct gui_event_status msg;
-    msg.flags = 0;
+    msg.flags = guiThemeFlags;
     msg.display_width = guiDim.width;
     msg.display_height = guiDim.height;
 

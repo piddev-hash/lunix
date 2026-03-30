@@ -37,6 +37,18 @@ static void sendLeaveEvent(void) {
     sendEvent(mouseWindow->connection, GUI_EVENT_MOUSE, sizeof(event), &event);
 }
 
+static void toggleTaskbarWindow(struct Window* window) {
+    if (window->visible && window == getTopVisibleWindow()) {
+        minimizeWindow(window);
+        return;
+    }
+
+    if (!window->visible) {
+        showWindow(window);
+    }
+    moveWindowToTop(window);
+}
+
 void handleMouse(dxui_control* control, dxui_mouse_event* event) {
     (void) control;
 
@@ -70,6 +82,19 @@ void handleMouse(dxui_control* control, dxui_mouse_event* event) {
     int status = 0;
     struct Window* win = NULL;
     if (!(event->flags & DXUI_MOUSE_LEFT) || !changingWindow) {
+        if (!leftClick && event->flags & DXUI_MOUSE_LEFT) {
+            struct Window* taskWindow = getTaskbarWindowAt(mousePos);
+            if (taskWindow) {
+                leftClick = true;
+                if (mouseWindow) {
+                    sendLeaveEvent();
+                    mouseWindow = NULL;
+                }
+                toggleTaskbarWindow(taskWindow);
+                return;
+            }
+        }
+
         for (win = topWindow; win; win = win->below) {
             if (!win->visible) continue;
             status = checkMouseInteraction(win, mousePos);
@@ -111,6 +136,8 @@ void handleMouse(dxui_control* control, dxui_mouse_event* event) {
                 msg.window_id = win->id;
                 sendEvent(win->connection, GUI_EVENT_CLOSE_BUTTON, sizeof(msg),
                         &msg);
+            } else if (status == MINIMIZE_BUTTON) {
+                minimizeWindow(win);
             } else if (status == TITLE_BAR) {
                 changingWindow = win;
             } else if (status != CLIENT_AREA) {

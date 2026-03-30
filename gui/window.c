@@ -23,14 +23,12 @@
 #include "connection.h"
 #include "window.h"
 
-static const int windowBorderSize = 4;
-static const int windowCloseButtonSize = 16;
-static const int windowTitleBarSize = 16 + 2 * windowBorderSize;
-
-static const dxui_color closeButtonColor = COLOR_RED;
-static const dxui_color closeCrossColor = COLOR_WHITE;
-static const dxui_color titleColor = COLOR_BLACK;
-static const dxui_color windowDecorationColor = RGBA(64, 64, 180, 200);
+static const int windowBorderSize = 3;
+static const int windowCloseButtonSize = 14;
+static const int windowMinimizeButtonSize = 14;
+static const int windowTitleAreaHeight = 18;
+static const int windowTitleBarSize = windowBorderSize + windowTitleAreaHeight +
+        1;
 
 struct Window* changingWindow;
 struct Window* mouseWindow;
@@ -38,24 +36,60 @@ struct Window* topWindow;
 
 static void addWindowOnTop(struct Window* window);
 static dxui_rect chooseWindowRect(int x, int y, int width, int height);
+static void damageWindowTitle(struct Window* window);
+static dxui_rect getCloseButtonRectLocal(struct Window* window);
+static dxui_rect getMinimizeButtonRectLocal(struct Window* window);
 static dxui_rect getCloseButtonRect(struct Window* window);
+static dxui_rect getMinimizeButtonRect(struct Window* window);
+static void refreshTaskButtonTitle(struct Window* window);
+static void refreshWindowTitle(struct Window* window);
+static void updateActiveWindow(struct Window* oldActive, struct Window* newActive);
 static void removeWindow(struct Window* window);
 static dxui_color renderCloseButton(int x, int y);
+static dxui_color renderMinimizeButton(int x, int y);
+static dxui_color renderTitleBarPixel(int x, int y, bool active);
+
+struct Window* getTopVisibleWindow(void) {
+    for (struct Window* window = topWindow; window; window = window->below) {
+        if (window->visible) return window;
+    }
+
+    return NULL;
+}
+
+static void updateActiveWindow(struct Window* oldActive, struct Window* newActive) {
+    if (oldActive && oldActive != newActive) {
+        refreshWindowTitle(oldActive);
+        damageWindowTitle(oldActive);
+    }
+
+    if (newActive && newActive != oldActive) {
+        refreshWindowTitle(newActive);
+        damageWindowTitle(newActive);
+    }
+
+    bool oldRelative = oldActive && oldActive->relativeMouse;
+    bool newRelative = newActive && newActive->relativeMouse;
+    if (oldRelative != newRelative) {
+        dxui_set_relative_mouse(compositorWindow, newRelative);
+    }
+
+    if (oldActive != newActive) {
+        damageDesktopBar();
+    }
+}
 
 static void addWindowOnTop(struct Window* window) {
-    bool relativeMouse = false;
+    struct Window* oldActive = getTopVisibleWindow();
 
     if (topWindow) {
         topWindow->above = window;
-        relativeMouse = topWindow->relativeMouse;
     }
     window->below = topWindow;
     window->above = NULL;
     topWindow = window;
 
-    if (window->relativeMouse != relativeMouse) {
-        dxui_set_relative_mouse(compositorWindow, window->relativeMouse);
-    }
+    updateActiveWindow(oldActive, getTopVisibleWindow());
 
     if (window->visible) {
         addDamageRect(window->rect);
@@ -68,14 +102,18 @@ struct Window* addWindow(int x, int y, int width, int height, const char* title,
     if (!window) dxui_panic(context, "malloc");
 
     window->connection = connection;
-    window->background = COLOR_WHITE_SMOKE;
+    window->background = gui_theme_window_background(guiThemeFlags);
     window->cursor = DXUI_CURSOR_ARROW;
     window->flags = flags;
     window->rect = chooseWindowRect(x, y, width, height);
+    window->restoreRect = window->rect;
+    window->titleText = NULL;
     window->titleLfb = NULL;
+    window->taskTitleLfb = NULL;
     window->lfb = NULL;
     window->clientDim = (dxui_dim) {0, 0};
     window->relativeMouse = false;
+    window->showInTaskbar = false;
     window->visible = false;
 
     setWindowTitle(window, title);
@@ -87,6 +125,8 @@ int checkMouseInteraction(struct Window* window, dxui_pos pos) {
     if (dxui_rect_contains_pos(window->rect, pos)) {
         if (dxui_rect_contains_pos(getClientRect(window), pos)) {
             return CLIENT_AREA;
+        } else if (dxui_rect_contains_pos(getMinimizeButtonRect(window), pos)) {
+            return MINIMIZE_BUTTON;
         } else if (dxui_rect_contains_pos(getCloseButtonRect(window), pos)) {
             return CLOSE_BUTTON;
         } else {
@@ -141,7 +181,17 @@ static dxui_rect chooseWindowRect(int x, int y, int width, int height) {
     return rect;
 }
 
+static void damageWindowTitle(struct Window* window) {
+    if (!window || !window->visible) return;
+
+    dxui_rect titleBar = window->rect;
+    titleBar.height = windowTitleBarSize;
+    addDamageRect(titleBar);
+}
+
 void closeWindow(struct Window* window) {
+    struct Window* oldActive = getTopVisibleWindow();
+
     if (changingWindow == window) {
         changingWindow = NULL;
     }
@@ -150,12 +200,16 @@ void closeWindow(struct Window* window) {
     }
 
     removeWindow(window);
+    updateActiveWindow(oldActive, getTopVisibleWindow());
     if (window->visible) {
         addDamageRect(window->rect);
     }
     window->connection->windows[window->id] = NULL;
+    free(window->titleText);
     free(window->titleLfb);
+    free(window->taskTitleLfb);
     free(window->lfb);
+    damageDesktopBar();
     free(window);
 }
 
@@ -168,20 +222,51 @@ dxui_rect getClientRect(struct Window* window) {
     return result;
 }
 
-static dxui_rect getCloseButtonRect(struct Window* window) {
+static dxui_rect getCloseButtonRectLocal(struct Window* window) {
+    (void) window;
     dxui_rect result;
-    result.x = window->rect.x + window->rect.width -
-            (windowCloseButtonSize + windowBorderSize);
-    result.y = window->rect.y + windowBorderSize;
+    result.x = windowBorderSize + 2;
+    result.y = windowBorderSize +
+            (windowTitleAreaHeight - windowCloseButtonSize) / 2;
     result.width = windowCloseButtonSize;
     result.height = windowCloseButtonSize;
     return result;
 }
 
+static dxui_rect getMinimizeButtonRectLocal(struct Window* window) {
+    dxui_rect result = getCloseButtonRectLocal(window);
+    result.x += result.width + 3;
+    result.width = windowMinimizeButtonSize;
+    result.height = windowMinimizeButtonSize;
+    return result;
+}
+
+static dxui_rect getCloseButtonRect(struct Window* window) {
+    dxui_rect result = getCloseButtonRectLocal(window);
+    result.x += window->rect.x;
+    result.y += window->rect.y;
+    return result;
+}
+
+static dxui_rect getMinimizeButtonRect(struct Window* window) {
+    dxui_rect result = getMinimizeButtonRectLocal(window);
+    result.x += window->rect.x;
+    result.y += window->rect.y;
+    return result;
+}
+
 void hideWindow(struct Window* window) {
     if (!window->visible) return;
+    struct Window* oldActive = getTopVisibleWindow();
     window->visible = false;
+    updateActiveWindow(oldActive, getTopVisibleWindow());
     addDamageRect(window->rect);
+    damageDesktopBar();
+}
+
+void minimizeWindow(struct Window* window) {
+    window->restoreRect = window->rect;
+    hideWindow(window);
 }
 
 void moveWindowToTop(struct Window* window) {
@@ -238,10 +323,6 @@ static void removeWindow(struct Window* window) {
         window->above->below = window->below;
     } else {
         topWindow = window->below;
-        if (window->relativeMouse != (topWindow && topWindow->relativeMouse)) {
-            dxui_set_relative_mouse(compositorWindow, topWindow &&
-                    topWindow->relativeMouse);
-        }
     }
 }
 
@@ -255,35 +336,109 @@ dxui_color renderClientArea(struct Window* window, int x, int y) {
 }
 
 static dxui_color renderCloseButton(int x, int y) {
-    if (((x == y) || (y == windowCloseButtonSize - 1 - x)) && x > 2 && x < 13) {
-        return closeCrossColor;
-    } else {
-        return closeButtonColor;
+    unsigned int flags = guiThemeFlags;
+    int last = windowCloseButtonSize - 1;
+
+    if (x == 0 || y == 0) {
+        return gui_theme_highlight(flags);
     }
+    if (x == 1 || y == 1) {
+        return gui_theme_light_shadow(flags);
+    }
+    if (x == last || y == last) {
+        return gui_theme_dark_shadow(flags);
+    }
+    if (x == last - 1 || y == last - 1) {
+        return gui_theme_shadow(flags);
+    }
+    if (((x == y) || (x == last - y)) && x >= 4 && x <= last - 4) {
+        return gui_theme_dark_shadow(flags);
+    }
+
+    return gui_theme_button_background(flags);
+}
+
+static dxui_color renderMinimizeButton(int x, int y) {
+    unsigned int flags = guiThemeFlags;
+    int last = windowMinimizeButtonSize - 1;
+
+    if (x == 0 || y == 0) {
+        return gui_theme_highlight(flags);
+    }
+    if (x == 1 || y == 1) {
+        return gui_theme_light_shadow(flags);
+    }
+    if (x == last || y == last) {
+        return gui_theme_dark_shadow(flags);
+    }
+    if (x == last - 1 || y == last - 1) {
+        return gui_theme_shadow(flags);
+    }
+    if (y >= last - 4 && y <= last - 3 && x >= 4 && x <= last - 4) {
+        return gui_theme_dark_shadow(flags);
+    }
+
+    return gui_theme_button_background(flags);
+}
+
+static dxui_color renderTitleBarPixel(int x, int y, bool active) {
+    (void) y;
+    dxui_color base = active ? gui_theme_title_active(guiThemeFlags) :
+            gui_theme_title_inactive(guiThemeFlags);
+    dxui_color stripe = gui_theme_title_stripe(guiThemeFlags, active);
+    return (x & 3) == 1 ? stripe : base;
 }
 
 dxui_color renderWindowDecoration(struct Window* window, int x, int y) {
-    int titleBegin = (window->rect.width - window->titleDim.width) / 2;
+    unsigned int flags = guiThemeFlags;
+    bool active = window == getTopVisibleWindow();
+    int width = window->rect.width;
+    int height = window->rect.height;
+    dxui_rect closeRect = getCloseButtonRectLocal(window);
+    dxui_rect minimizeRect = getMinimizeButtonRectLocal(window);
+    int titleX = minimizeRect.x + minimizeRect.width + 6;
+    int titleY = windowBorderSize +
+            (windowTitleAreaHeight - window->titleDim.height) / 2;
 
-    if (y < windowBorderSize ||
-            y >= windowBorderSize + window->titleDim.height) {
-        return windowDecorationColor;
-    } else if (x >= window->rect.width - (windowBorderSize +
-            windowCloseButtonSize) && x < window->rect.width -
-            windowBorderSize) {
-        return renderCloseButton(x - window->rect.width + windowBorderSize +
-                windowCloseButtonSize, y - windowBorderSize);
-    } else if (x < titleBegin ||
-            x >= titleBegin + window->titleDim.width) {
-        return windowDecorationColor;
-    } else {
-        x -= titleBegin;
-        y -= windowBorderSize;
-        dxui_color color = window->titleLfb[y * window->titleDim.width + x];
-        if (!color) return windowDecorationColor;
-        return color;
-
+    if (x == 0 || y == 0 || x == width - 1 || y == height - 1) {
+        return gui_theme_dark_shadow(flags);
     }
+    if (x == 1 || y == 1) {
+        return gui_theme_highlight(flags);
+    }
+    if (x == width - 2 || y == height - 2) {
+        return gui_theme_shadow(flags);
+    }
+    if (y == windowTitleBarSize - 2 && x >= windowBorderSize &&
+            x < width - windowBorderSize) {
+        return gui_theme_highlight(flags);
+    }
+    if (y == windowTitleBarSize - 1 && x >= windowBorderSize &&
+            x < width - windowBorderSize) {
+        return gui_theme_dark_shadow(flags);
+    }
+    if (x >= closeRect.x && x < closeRect.x + closeRect.width &&
+            y >= closeRect.y && y < closeRect.y + closeRect.height) {
+        return renderCloseButton(x - closeRect.x, y - closeRect.y);
+    }
+    if (x >= minimizeRect.x && x < minimizeRect.x + minimizeRect.width &&
+            y >= minimizeRect.y && y < minimizeRect.y + minimizeRect.height) {
+        return renderMinimizeButton(x - minimizeRect.x, y - minimizeRect.y);
+    }
+    if (y >= windowBorderSize && y < windowTitleBarSize - 1 &&
+            x >= windowBorderSize && x < width - windowBorderSize) {
+        if (window->titleLfb && x >= titleX &&
+                x < titleX + window->titleDim.width && y >= titleY &&
+                y < titleY + window->titleDim.height) {
+            dxui_color color = window->titleLfb[(y - titleY) *
+                    window->titleDim.width + x - titleX];
+            if (color) return color;
+        }
+        return renderTitleBarPixel(x - windowBorderSize, y - windowBorderSize,
+                active);
+    }
+
+    return gui_theme_face(flags);
 }
 
 void resizeClientRect(struct Window* window, dxui_dim dim) {
@@ -316,23 +471,74 @@ void setWindowCursor(struct Window* window, int cursor) {
     window->cursor = cursor;
 }
 
-void setWindowTitle(struct Window* window, const char* title) {
+static void refreshWindowTitle(struct Window* window) {
     free(window->titleLfb);
+    window->titleLfb = NULL;
+
+    const char* title = window->titleText ? window->titleText : "";
     dxui_rect rect = {{0, 0, 0, 0}};
     rect = dxui_get_text_rect(title, rect, 0);
-    window->titleLfb = calloc(rect.width * rect.height, sizeof(dxui_color));
-    if (!window->titleLfb) dxui_panic(context, "malloc");
-    dxui_draw_text_in_rect(context, window->titleLfb, title, titleColor,
-            rect.pos, rect, rect.width);
     window->titleDim = rect.dim;
 
-    dxui_rect titleBar = window->rect;
-    titleBar.height = windowTitleBarSize;
-    addDamageRect(titleBar);
+    if (rect.width == 0 || rect.height == 0) return;
+
+    window->titleLfb = calloc(rect.width * rect.height, sizeof(dxui_color));
+    if (!window->titleLfb) dxui_panic(context, "malloc");
+
+    dxui_draw_text_in_rect(context, window->titleLfb, title,
+            gui_theme_title_text(guiThemeFlags, window == getTopVisibleWindow()),
+            rect.pos, rect, rect.width);
+}
+
+static void refreshTaskButtonTitle(struct Window* window) {
+    free(window->taskTitleLfb);
+    window->taskTitleLfb = NULL;
+
+    const char* title = window->titleText ? window->titleText : "";
+    dxui_rect rect = {{0, 0, 0, 0}};
+    rect = dxui_get_text_rect(title, rect, 0);
+    window->taskTitleDim = rect.dim;
+
+    if (rect.width == 0 || rect.height == 0) return;
+
+    window->taskTitleLfb = calloc(rect.width * rect.height, sizeof(dxui_color));
+    if (!window->taskTitleLfb) dxui_panic(context, "malloc");
+
+    dxui_draw_text_in_rect(context, window->taskTitleLfb, title,
+            gui_theme_text(guiThemeFlags), rect.pos, rect, rect.width);
+}
+
+void setWindowTitle(struct Window* window, const char* title) {
+    char* copy = strdup(title ? title : "");
+    if (!copy) dxui_panic(context, "malloc");
+
+    free(window->titleText);
+    window->titleText = copy;
+    refreshWindowTitle(window);
+    refreshTaskButtonTitle(window);
+    damageWindowTitle(window);
+    if (window->showInTaskbar) {
+        damageDesktopBar();
+    }
 }
 
 void showWindow(struct Window* window) {
     if (window->visible) return;
+    struct Window* oldActive = getTopVisibleWindow();
+    window->showInTaskbar = true;
     window->visible = true;
+    updateActiveWindow(oldActive, getTopVisibleWindow());
     addDamageRect(window->rect);
+    damageDesktopBar();
+}
+
+void refreshWindowTheme(void) {
+    for (struct Window* window = topWindow; window; window = window->below) {
+        refreshWindowTitle(window);
+        refreshTaskButtonTitle(window);
+        if (window->visible) {
+            addDamageRect(window->rect);
+        }
+    }
+    damageDesktopBar();
 }

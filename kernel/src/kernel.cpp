@@ -102,6 +102,7 @@ extern "C" void kmain(uint32_t /*magic*/, paddr_t multibootAddress) {
     job.context = &rootFd;
     WorkerThread::addJob(&job);
     WorkerThread::initialize();
+    Thread::startDeferredKernelThreads();
 
     while (true) {
         asm volatile ("hlt");

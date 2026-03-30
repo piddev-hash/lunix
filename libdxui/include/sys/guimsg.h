@@ -55,6 +55,10 @@ enum {
     GUI_WINDOW_COMPOSITOR = 1 << 1,
 };
 
+enum {
+    GUI_STATUS_DARK_THEME = 1 << 0,
+};
+
 struct gui_msg_create_window {
     int x;
     int y;
@@ -130,7 +134,7 @@ struct gui_msg_set_relative_mouse {
 };
 
 struct gui_event_status {
-    /* currently no flags are defined. */
+    /* GUI_STATUS_* flags. */
     unsigned int flags;
     unsigned int display_width;
     unsigned int display_height;

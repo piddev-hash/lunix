@@ -28,6 +28,7 @@ typedef struct dxui_internal_container Container;
 typedef struct {
     void (*delete)(Control*);
     void (*redraw)(Control*, dxui_dim, dxui_color*, unsigned int);
+    dxui_color (*getThemeBackground)(unsigned int);
 } ControlClass;
 
 extern const ControlClass dxui_windowControlClass;
@@ -52,6 +53,7 @@ struct dxui_internal_control {
     char* text;
     dxui_rect rect;
     dxui_color background;
+    bool useThemeBackground;
 };
 
 struct dxui_internal_container {

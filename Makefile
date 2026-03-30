@@ -27,6 +27,8 @@ ISO = lunix.iso
 LICENSE = $(LICENSES_DIR)/lunix/LICENSE
 DXPORT = ./ports/dxport --host=$(ARCH)-lunix --builddir=$(BUILD_DIR)/ports
 DXPORT += --sysroot=$(SYSROOT)
+QEMU = qemu-system-$(BASE_ARCH)
+QEMU_NET = -netdev user,id=net0 -device rtl8139,netdev=net0
 
 all: libc kernel libdxui gui apps sh utils iso
 
@@ -97,7 +99,7 @@ $(INITRD): $(SYSROOT)
 	cd $(SYSROOT) && tar -cf - --format=ustar * | $(COMPRESS) > ../$(INITRD)
 
 qemu: $(ISO)
-	qemu-system-$(BASE_ARCH) -cdrom $^ -m 1G -cpu host -enable-kvm
+	$(QEMU) -cdrom $^ -m 1G -cpu host -enable-kvm $(QEMU_NET)
 
 sh: $(INCLUDE_DIR) $(LIB_DIR)
 	$(MAKE) -C sh

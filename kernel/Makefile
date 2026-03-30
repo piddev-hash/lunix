@@ -36,6 +36,7 @@ OBJ = \
 	addressspace.o \
 	ahci.o \
 	ata.o \
+	audio.o \
 	bga.o \
 	blockcache.o \
 	circularbuffer.o \
@@ -46,10 +47,12 @@ OBJ = \
 	devices.o \
 	directory.o \
 	display.o \
+	ehci.o \
 	ext234fs.o \
 	ext234vnode.o \
 	file.o \
 	filedescription.o \
+	hda.o \
 	hpet.o \
 	initrd.o \
 	kernel.o \
@@ -59,6 +62,7 @@ OBJ = \
 	log.o \
 	memorysegment.o \
 	mouse.o \
+	netdevice.o \
 	panic.o \
 	partition.o \
 	pci.o \
@@ -73,15 +77,19 @@ OBJ = \
 	random.o \
 	refcount.o \
 	rtc.o \
+	rtl8139.o \
+	rtl8169.o \
 	signal.o \
 	streamsocket.o \
 	symlink.o \
 	syscall.o \
 	terminal.o \
 	thread.o \
+	uhci.o \
 	virtualbox.o \
 	vnode.o \
-	worker.o
+	worker.o \
+	xhci.o
 
 all: $(BUILD)/kernel
 

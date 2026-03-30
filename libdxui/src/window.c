@@ -24,8 +24,10 @@
 #include <string.h>
 #include <sys/guimsg.h>
 #include "context.h"
+#include "theme.h"
 
 static void deleteWindow(Control* control);
+static dxui_color getWindowThemeBackground(unsigned int themeFlags);
 static void redrawWindow(Control* control, dxui_dim dim, dxui_color* lfb,
         unsigned int pitch);
 static dxui_context* getWindowContext(Container* container);
@@ -36,6 +38,7 @@ static void invalidateWindowRect(Container* container, dxui_rect rect);
 
 const ControlClass dxui_windowControlClass = {
     .delete = deleteWindow,
+    .getThemeBackground = getWindowThemeBackground,
     .redraw = redrawWindow,
 };
 static const ContainerClass windowContainerClass = {
@@ -43,6 +46,10 @@ static const ContainerClass windowContainerClass = {
     .getFramebuffer = getWindowFramebuffer,
     .invalidate = invalidateWindowRect,
 };
+
+static dxui_color getWindowThemeBackground(unsigned int themeFlags) {
+    return gui_theme_window_background(themeFlags);
+}
 
 void dxui_close(dxui_window* window) {
     Window* win = window->internal;
@@ -90,8 +97,9 @@ dxui_window* dxui_create_window(dxui_context* context, dxui_rect rect,
     }
     window->compositorTitle = window->control.text;
     window->control.rect = rect;
-    window->control.background = COLOR_WHITE_SMOKE;
-    window->compositorBackground = COLOR_WHITE_SMOKE;
+    window->control.background = dxui_theme_window_background(context);
+    window->control.useThemeBackground = true;
+    window->compositorBackground = window->control.background;
     window->container.class = &windowContainerClass;
     window->context = context;
     window->idAssigned = false;
@@ -192,15 +200,8 @@ static void deleteWindow(Control* control) {
 static void redrawWindow(Control* control, dxui_dim dim, dxui_color* lfb,
         unsigned int pitch) {
     Window* window = (Window*) control;
-    if (window->manualDrawing) {
-        window->context->backend->redrawWindow(window->context, window->id,
-                window->lfbDim, window->lfb);
-        window->redraw = false;
-        return;
-    }
-    window->updateInProgress = true;
 
-    // Inform the compositor about changed backgrounds and titles.
+    // Keep compositor-side decoration colors in sync even for manual drawing.
     if (window->compositorBackground != control->background) {
         window->context->backend->setWindowBackground(window->context,
                 window->id, control->background);
@@ -212,6 +213,14 @@ static void redrawWindow(Control* control, dxui_dim dim, dxui_color* lfb,
                 control->text);
         window->compositorTitle = control->text;
     }
+
+    if (window->manualDrawing) {
+        window->context->backend->redrawWindow(window->context, window->id,
+                window->lfbDim, window->lfb);
+        window->redraw = false;
+        return;
+    }
+    window->updateInProgress = true;
 
     for (int y = 0; y < dim.height; y++) {
         for (int x = 0; x < dim.width; x++) {

@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "control.h"
+#include "context.h"
 
 void (dxui_delete)(dxui_control* control) {
     Control* internal = control->internal;
@@ -63,6 +64,7 @@ void* (dxui_get_user_data)(dxui_control* control) {
 
 void (dxui_set_background)(dxui_control* control, dxui_color background) {
     control->internal->background = background;
+    control->internal->useThemeBackground = false;
     dxui_update(control);
 }
 
@@ -121,6 +123,15 @@ void (dxui_add_control)(dxui_container* container, dxui_control* control) {
     }
     container->internal->firstControl = internal;
     internal->owner = container->internal;
+
+    dxui_context* context = container->internal->class->getContext(
+            container->internal);
+    if (context && internal->useThemeBackground &&
+            internal->class->getThemeBackground) {
+        internal->background = internal->class->getThemeBackground(
+                context->themeFlags);
+    }
+
     dxui_update(control);
 }
 

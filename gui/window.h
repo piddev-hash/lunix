@@ -31,11 +31,16 @@ struct Window {
     unsigned int id;
     int flags;
     dxui_rect rect;
+    dxui_rect restoreRect;
+    char* titleText;
     dxui_color* titleLfb;
     dxui_dim titleDim;
+    dxui_color* taskTitleLfb;
+    dxui_dim taskTitleDim;
     dxui_color* lfb;
     dxui_dim clientDim;
     bool relativeMouse;
+    bool showInTaskbar;
     bool visible;
 };
 
@@ -46,6 +51,7 @@ enum {
     RESIZE_LEFT = 1 << 3,
     CLIENT_AREA = 1 << 4,
     CLOSE_BUTTON,
+    MINIMIZE_BUTTON,
     TITLE_BAR,
 
     RESIZE_TOP_LEFT = RESIZE_TOP | RESIZE_LEFT,
@@ -63,7 +69,9 @@ struct Window* addWindow(int x, int y, int width, int height, const char* title,
 int checkMouseInteraction(struct Window* window, dxui_pos pos);
 void closeWindow(struct Window* window);
 dxui_rect getClientRect(struct Window* window);
+struct Window* getTopVisibleWindow(void);
 void hideWindow(struct Window* window);
+void minimizeWindow(struct Window* window);
 void moveWindowToTop(struct Window* window);
 void redrawWindow(struct Window* window, int width, int height,
         dxui_color* lfb);
@@ -71,6 +79,7 @@ void redrawWindowPart(struct Window* window, int x, int y, int width,
         int height, size_t pitch, dxui_color* lfb);
 dxui_color renderClientArea(struct Window* window, int x, int y);
 dxui_color renderWindowDecoration(struct Window* window, int x, int y);
+void refreshWindowTheme(void);
 void resizeClientRect(struct Window* window, dxui_dim dim);
 void resizeWindow(struct Window* window, dxui_rect rect);
 void setWindowBackground(struct Window* window, dxui_color color);

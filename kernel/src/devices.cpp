@@ -22,6 +22,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <lunix/poll.h>
+#include <lunix/kernel/audio.h>
 #include <lunix/kernel/console.h>
 #include <lunix/kernel/devices.h>
 #include <lunix/kernel/mouse.h>
@@ -122,6 +123,8 @@ void DevFS::initialize(const Reference<DirectoryVnode>& rootDir) {
     if (!dir || dir->mount(this) < 0) {
         PANIC("Could not mount /dev filesystem.");
     }
+    audioDevice = xnew AudioDevice();
+    addDevice("audio", audioDevice);
     addDevice("console", console);
     addDevice("display", console->display);
     addDevice("full", xnew DevFull());

@@ -31,6 +31,7 @@ static NORETURN void worker(void) {
         Interrupts::disable();
         WorkerJob* job = firstJob;
         firstJob = nullptr;
+        lastJob = nullptr;
         Interrupts::enable();
 
         if (!job) {

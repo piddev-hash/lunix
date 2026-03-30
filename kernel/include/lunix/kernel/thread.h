@@ -75,11 +75,13 @@ public:
     using ThreadList = LinkedList<Thread, &Thread::prev, &Thread::next>;
 
     static void addThread(Thread* thread);
+    static Thread* createKernelThread(void (*entry)(void*), void* argument);
     static Thread* current() { return _current; }
     static Thread* idleThread;
     static void initializeIdleThread();
     static void removeThread(Thread* thread);
     static InterruptContext* schedule(InterruptContext* context);
+    static void startDeferredKernelThreads();
 private:
     static Thread* _current;
 };

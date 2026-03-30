@@ -21,9 +21,42 @@ include $(REPO_ROOT)/build-aux/version.mk
 
 BUILD = $(BUILD_DIR)/utils
 
+ARFLAGS = -crs
 CFLAGS ?= -O2 -g
 CFLAGS += --sysroot=$(SYSROOT) -std=c11 -fstack-protector-strong -Wall -Wextra
 CPPFLAGS += -D_DENNIX_SOURCE -DDENNIX_VERSION=\"$(VERSION)\"
+
+MPG123_DIR = $(REPO_ROOT)/third_party/mpg123
+MPG123_BUILD = $(BUILD)/third_party/mpg123
+MPG123_CPPFLAGS = -I$(MPG123_DIR) -I$(MPG123_DIR)/compat -I$(MPG123_DIR)/libmpg123
+MPG123_LIB = $(BUILD)/libmpg123.a
+MPG123_OBJ = \
+	compat/compat.o \
+	compat/compat_str.o \
+	libmpg123/dct64.o \
+	libmpg123/dither.o \
+	libmpg123/equalizer.o \
+	libmpg123/feature.o \
+	libmpg123/format.o \
+	libmpg123/frame.o \
+	libmpg123/icy.o \
+	libmpg123/icy2utf8.o \
+	libmpg123/id3.o \
+	libmpg123/index.o \
+	libmpg123/layer1.o \
+	libmpg123/layer2.o \
+	libmpg123/layer3.o \
+	libmpg123/libmpg123.o \
+	libmpg123/ntom.o \
+	libmpg123/optimize.o \
+	libmpg123/parse.o \
+	libmpg123/readers.o \
+	libmpg123/stringbuf.o \
+	libmpg123/synth.o \
+	libmpg123/synth_8bit.o \
+	libmpg123/synth_real.o \
+	libmpg123/synth_s32.o \
+	libmpg123/tabinit.o
 
 BIN_PROGRAMS = \
 	basename \
@@ -45,6 +78,7 @@ BIN_PROGRAMS = \
 	meminfo \
 	mkdir \
 	mv \
+	ping \
 	printf \
 	pwd \
 	rm \
@@ -60,14 +94,20 @@ BIN_PROGRAMS = \
 	touch \
 	tr \
 	true \
-	uname
+	uname \
+	mp3play
 
 SBIN_PROGRAMS = \
+	dhcp \
 	init \
 	mount \
 	umount
 
 PROGRAMS = $(BIN_PROGRAMS) $(SBIN_PROGRAMS)
+MPG123_OBJ := $(addprefix $(MPG123_BUILD)/, $(MPG123_OBJ))
+
+.DEFAULT_GOAL := all
+-include $(MPG123_OBJ:.o=.d)
 
 all: $(addprefix $(BUILD)/, $(PROGRAMS))
 
@@ -84,9 +124,20 @@ install-sbin: $(addprefix $(BUILD)/, $(SBIN_PROGRAMS))
 	cp -f $^ $(SBIN_DIR)
 	touch $(SYSROOT)
 
+$(MPG123_LIB): $(MPG123_OBJ)
+	$(AR) $(ARFLAGS) $@ $^
+
+$(BUILD)/mp3play: mp3play.c $(MPG123_LIB)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(MPG123_CPPFLAGS) -o $@ $< $(MPG123_LIB)
+
 $(BUILD)/%: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $<
+
+$(MPG123_BUILD)/%.o: $(MPG123_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(MPG123_CPPFLAGS) -MD -MP -c -o $@ $<
 
 $(BUILD)/mv: cp.c rm.c
 $(BUILD)/tail: head.c

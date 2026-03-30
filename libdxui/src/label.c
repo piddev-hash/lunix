@@ -18,6 +18,7 @@
  */
 
 #include "control.h"
+#include "theme.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -29,11 +30,13 @@ typedef struct dxui_internal_label {
 } Label;
 
 static void deleteLabel(Control* control);
+static dxui_color getLabelThemeBackground(unsigned int themeFlags);
 static void redrawLabel(Control* control, dxui_dim dim, dxui_color* lfb,
         unsigned int pitch);
 
 static const ControlClass labelClass = {
     .delete = deleteLabel,
+    .getThemeBackground = getLabelThemeBackground,
     .redraw = redrawLabel,
 };
 
@@ -43,7 +46,8 @@ dxui_label* dxui_create_label(dxui_rect rect, const char* text) {
     label->control.self = label;
     label->control.class = &labelClass;
     label->control.rect = rect;
-    label->control.background = COLOR_WHITE_SMOKE;
+    label->control.background = gui_theme_window_background(0);
+    label->control.useThemeBackground = true;
     label->control.text = strdup(text);
     if (!label->control.text) {
         free(label);
@@ -55,6 +59,10 @@ dxui_label* dxui_create_label(dxui_rect rect, const char* text) {
 
 static void deleteLabel(Control* control) {
     (void) control;
+}
+
+static dxui_color getLabelThemeBackground(unsigned int themeFlags) {
+    return gui_theme_window_background(themeFlags);
 }
 
 static void redrawLabel(Control* control, dxui_dim dim, dxui_color* lfb,
@@ -69,7 +77,7 @@ static void redrawLabel(Control* control, dxui_dim dim, dxui_color* lfb,
     }
 
     dxui_context* context = control->owner->class->getContext(control->owner);
-    dxui_draw_text(context, lfb, control->text, COLOR_BLACK, control->rect,
-            rect, pitch, 0);
+    dxui_draw_text(context, lfb, control->text, dxui_theme_text_primary(context),
+            control->rect, rect, pitch, 0);
     control->owner->class->invalidate(control->owner, control->rect);
 }

@@ -18,6 +18,7 @@
  */
 
 #include "control.h"
+#include "theme.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -29,11 +30,13 @@ typedef struct dxui_internal_button {
 } Button;
 
 static void deleteButton(Control* control);
+static dxui_color getButtonThemeBackground(unsigned int themeFlags);
 static void redrawButton(Control* control, dxui_dim dim, dxui_color* lfb,
         unsigned int pitch);
 
 static const ControlClass buttonClass = {
     .delete = deleteButton,
+    .getThemeBackground = getButtonThemeBackground,
     .redraw = redrawButton,
 };
 
@@ -43,7 +46,8 @@ dxui_button* dxui_create_button(dxui_rect rect, const char* text) {
     button->control.self = button;
     button->control.class = &buttonClass;
     button->control.rect = rect;
-    button->control.background = COLOR_WHITE_SMOKE;
+    button->control.background = gui_theme_button_background(0);
+    button->control.useThemeBackground = true;
     button->control.text = strdup(text);
     if (!button->control.text) {
         free(button);
@@ -57,29 +61,38 @@ static void deleteButton(Control* control) {
     (void) control;
 }
 
+static dxui_color getButtonThemeBackground(unsigned int themeFlags) {
+    return gui_theme_button_background(themeFlags);
+}
+
 static void redrawButton(Control* control, dxui_dim dim, dxui_color* lfb,
         unsigned int pitch) {
-    static const int margin = 2;
     dxui_rect rect = dxui_rect_crop(control->rect, dim);
+    dxui_context* context = control->owner->class->getContext(control->owner);
 
     for (int y = 0; y < rect.height; y++) {
         for (int x = 0; x < rect.width; x++) {
+            int controlX = rect.x - control->rect.x + x;
+            int controlY = rect.y - control->rect.y + y;
             size_t index = (rect.y + y) * pitch + rect.x + x;
 
-            if ((x <= margin && y < control->rect.height - x) ||
-                    (y <= margin && x < control->rect.width - y)) {
-                lfb[index] = COLOR_SILVER;
-            } else if (x >= control->rect.width - 1 - margin ||
-                    y >= control->rect.height - 1 - margin) {
-                lfb[index] = COLOR_GRAY;
+            if (controlX == 0 || controlY == 0) {
+                lfb[index] = dxui_theme_highlight(context);
+            } else if (controlX == 1 || controlY == 1) {
+                lfb[index] = dxui_theme_light_shadow(context);
+            } else if (controlX == control->rect.width - 1 ||
+                    controlY == control->rect.height - 1) {
+                lfb[index] = dxui_theme_dark_shadow(context);
+            } else if (controlX == control->rect.width - 2 ||
+                    controlY == control->rect.height - 2) {
+                lfb[index] = dxui_theme_shadow(context);
             } else {
                 lfb[index] = control->background;
             }
         }
     }
 
-    dxui_context* context = control->owner->class->getContext(control->owner);
-    dxui_draw_text(context, lfb, control->text, COLOR_BLACK,
+    dxui_draw_text(context, lfb, control->text, dxui_theme_text_primary(context),
             control->rect, rect, pitch, DXUI_TEXT_CENTERED);
 
     control->owner->class->invalidate(control->owner, control->rect);
