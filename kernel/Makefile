@@ -70,6 +70,7 @@ OBJ = \
 	pipe.o \
 	pit.o \
 	process.o \
+	polaris.o \
 	ps2.o \
 	ps2keyboard.o \
 	ps2mouse.o \

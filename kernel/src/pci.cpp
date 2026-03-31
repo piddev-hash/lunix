@@ -24,6 +24,7 @@
 #include <lunix/kernel/hda.h>
 #include <lunix/kernel/log.h>
 #include <lunix/kernel/pci.h>
+#include <lunix/kernel/polaris.h>
 #include <lunix/kernel/portio.h>
 #include <lunix/kernel/rtl8139.h>
 #include <lunix/kernel/rtl8169.h>
@@ -63,6 +64,7 @@ struct PciBridgeHeader {
 };
 
 static void checkBus(uint8_t bus);
+static bool checkedBuses[256];
 
 int Pci::getIrq(unsigned int bus, unsigned int device, unsigned int function) {
     if (!Interrupts::hasApic) {
@@ -159,6 +161,12 @@ static void checkFunction(uint8_t bus, uint8_t device, uint8_t function,
         BgaDevice::initialize(bus, device, function);
     }
 
+    PolarisAsic polarisAsic;
+    if (vendor == 0x1002 && classCode == 0x03 &&
+            PolarisDevice::matchesDevice(deviceId, polarisAsic)) {
+        PolarisDevice::initialize(bus, device, function, polarisAsic);
+    }
+
     if (vendor == 0x80EE && deviceId == 0xCAFE) {
         VirtualBox::initialize(bus, device, function);
     }
@@ -223,12 +231,19 @@ static void checkDevice(uint8_t bus, uint8_t device) {
 }
 
 static void checkBus(uint8_t bus) {
+    if (checkedBuses[bus]) return;
+    checkedBuses[bus] = true;
+
     for (uint8_t i = 0; i < 32; i++) {
         checkDevice(bus, i);
     }
 }
 
 void Pci::scanForDevices() {
+    for (size_t i = 0; i < sizeof(checkedBuses) / sizeof(checkedBuses[0]); i++) {
+        checkedBuses[i] = false;
+    }
+
     uint8_t headerType = readConfig(0, 0, 0, offsetof(PciHeader, headerType));
     if (headerType & PCI_HEADER_MULTIFUNCTION) {
         for (uint8_t i = 0; i < 8; i++) {

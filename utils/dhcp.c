@@ -145,35 +145,70 @@ struct DhcpLease {
     uint32_t rebindingTime;
 };
 
+enum DhcpParseResult {
+    DHCP_PARSE_MATCH,
+    DHCP_PARSE_NOT_IPV4,
+    DHCP_PARSE_BAD_IPV4,
+    DHCP_PARSE_NOT_UDP,
+    DHCP_PARSE_TRUNCATED_UDP,
+    DHCP_PARSE_NOT_DHCP_PORTS,
+    DHCP_PARSE_BAD_BOOTP,
+    DHCP_PARSE_WRONG_TRANSACTION,
+    DHCP_PARSE_WRONG_CLIENT_MAC,
+    DHCP_PARSE_BAD_MAGIC,
+    DHCP_PARSE_BAD_OPTIONS,
+    DHCP_PARSE_NO_MESSAGE_TYPE,
+};
+
+struct DhcpDebugStats {
+    uint32_t framesRead;
+    uint32_t matched;
+    uint32_t nonIpv4;
+    uint32_t badIpv4;
+    uint32_t nonUdp;
+    uint32_t truncatedUdp;
+    uint32_t wrongPorts;
+    uint32_t badBootp;
+    uint32_t wrongTransaction;
+    uint32_t wrongClientMac;
+    uint32_t badMagic;
+    uint32_t badOptions;
+    uint32_t noMessageType;
+};
+
 static volatile sig_atomic_t interrupted = 0;
+static bool verboseDhcp = false;
 
 static uint32_t addChecksumWords(uint32_t sum, const void* buffer,
         size_t length);
-static uint16_t calculateChecksum(const void* buffer, size_t length);
-static bool acquireDhcpLease(int fd, const uint8_t localMac[6],
+static bool acquireDhcpLease(const char* device, int fd,
+        const uint8_t localMac[6],
         unsigned int attempts, unsigned int timeoutMs,
         struct DhcpLease* finalLease);
+static uint16_t calculateChecksum(const void* buffer, size_t length);
+static const char* dhcpMessageTypeName(int messageType);
 static int64_t elapsedNanoseconds(const struct timespec* start,
         const struct timespec* end);
 static void formatIpv4(const uint8_t address[4], char buffer[16]);
-static bool getIpv4Payload(const uint8_t* frame, size_t frameLength,
-        uint8_t expectedProtocol, const uint8_t** payload,
-        size_t* payloadLength);
+static void formatMac(const uint8_t address[6], char buffer[18]);
 static void handleSignal(int signalNumber);
 static bool isEthernetDeviceName(const char* name);
 static void mergeLease(struct DhcpLease* destination,
         const struct DhcpLease* source);
 static long parseLong(const char* string, const char* option, long min,
         long max);
-static bool parseDhcpMessage(const uint8_t* frame, size_t frameLength,
+static enum DhcpParseResult parseDhcpMessage(const uint8_t* frame,
+        size_t frameLength,
         uint32_t transactionId, const uint8_t localMac[6], int* messageType,
         struct DhcpLease* lease);
+static void printDebugStats(const char* device, const char* phase,
+        unsigned int attempt, const struct DhcpDebugStats* stats);
 static void sendDhcpMessage(int fd, const uint8_t localMac[6],
         uint32_t transactionId, int messageType, const uint8_t requestedIp[4],
         const uint8_t serverId[4]);
 static bool waitForDhcpMessage(int fd, uint32_t transactionId,
         const uint8_t localMac[6], unsigned int timeoutMs, int* messageType,
-        struct DhcpLease* lease);
+        struct DhcpLease* lease, struct DhcpDebugStats* stats);
 static bool writeLeaseConfig(const char* device, const struct DhcpLease* lease,
         char path[NETWORK_CONFIG_PATH_MAX]);
 
@@ -182,6 +217,7 @@ int main(int argc, char* argv[]) {
         { "attempts", required_argument, 0, 'a' },
         { "device", required_argument, 0, 'd' },
         { "timeout", required_argument, 0, 't' },
+        { "verbose", no_argument, 0, 'v' },
         { "help", no_argument, 0, 0 },
         { "version", no_argument, 0, 1 },
         { 0, 0, 0, 0 }
@@ -193,7 +229,7 @@ int main(int argc, char* argv[]) {
     bool deviceSpecified = false;
 
     int c;
-    while ((c = getopt_long(argc, argv, "a:d:t:", longopts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "a:d:t:v", longopts, NULL)) != -1) {
         switch (c) {
         case 0:
             return help(argv[0], "[OPTIONS] [DEVICE]\n"
@@ -201,6 +237,7 @@ int main(int argc, char* argv[]) {
                     "  -d, --device=DEVICE      raw ethernet device\n"
                     "  -t, --timeout=MS         timeout per DHCP step in "
                     "milliseconds\n"
+                    "  -v, --verbose            print DHCP diagnostics\n"
                     "      --help               display this help\n"
                     "      --version            display version info\n"
                     "\n"
@@ -223,6 +260,9 @@ int main(int argc, char* argv[]) {
         case 't':
             timeoutMs = (unsigned int) parseLong(optarg, "--timeout", 1,
                     INT_MAX);
+            break;
+        case 'v':
+            verboseDhcp = true;
             break;
         case '?':
             return 1;
@@ -259,7 +299,13 @@ int main(int argc, char* argv[]) {
             errx(1, "%s: link is down", device);
         }
 
-        gotLease = acquireDhcpLease(fd, info.mac, attempts, timeoutMs,
+        if (verboseDhcp) {
+            char mac[18];
+            formatMac(info.mac, mac);
+            fprintf(stderr, "%s: trying interface mac %s\n", device, mac);
+        }
+
+        gotLease = acquireDhcpLease(device, fd, info.mac, attempts, timeoutMs,
                 &finalLease);
         close(fd);
 
@@ -296,7 +342,13 @@ int main(int argc, char* argv[]) {
                 continue;
             }
 
-            if (acquireDhcpLease(fd, info.mac, attempts, timeoutMs,
+            if (verboseDhcp) {
+                char mac[18];
+                formatMac(info.mac, mac);
+                fprintf(stderr, "%s: trying interface mac %s\n", path, mac);
+            }
+
+            if (acquireDhcpLease(path, fd, info.mac, attempts, timeoutMs,
                     &finalLease)) {
                 snprintf(selectedDevice, sizeof(selectedDevice), "%s", path);
                 gotLease = true;
@@ -304,6 +356,9 @@ int main(int argc, char* argv[]) {
                 break;
             }
 
+            if (verboseDhcp) {
+                fprintf(stderr, "%s: no lease acquired\n", path);
+            }
             close(fd);
         }
 
@@ -343,7 +398,8 @@ int main(int argc, char* argv[]) {
     return 0;
 }
 
-static bool acquireDhcpLease(int fd, const uint8_t localMac[6],
+static bool acquireDhcpLease(const char* device, int fd,
+        const uint8_t localMac[6],
         unsigned int attempts, unsigned int timeoutMs,
         struct DhcpLease* finalLease) {
     struct timespec now;
@@ -354,13 +410,38 @@ static bool acquireDhcpLease(int fd, const uint8_t localMac[6],
     for (unsigned int attempt = 0; attempt < attempts && !interrupted;
             attempt++) {
         uint32_t transactionId = baseTransactionId + attempt;
+        if (verboseDhcp) {
+            fprintf(stderr, "%s: attempt %u xid=0x%08" PRIX32
+                    " send DHCPDISCOVER\n", device, attempt + 1,
+                    transactionId);
+        }
         sendDhcpMessage(fd, localMac, transactionId, DHCPDISCOVER, NULL, NULL);
 
         int messageType;
         struct DhcpLease offer = {};
+        struct DhcpDebugStats discoverStats = {};
         if (!waitForDhcpMessage(fd, transactionId, localMac, timeoutMs,
-                &messageType, &offer) || messageType != DHCPOFFER) {
+                &messageType, &offer, &discoverStats)) {
+            if (verboseDhcp) {
+                printDebugStats(device, "discover timeout", attempt + 1,
+                        &discoverStats);
+            }
             continue;
+        }
+        if (messageType != DHCPOFFER) {
+            if (verboseDhcp) {
+                fprintf(stderr, "%s: attempt %u unexpected %s while waiting "
+                        "for DHCPOFFER\n", device, attempt + 1,
+                        dhcpMessageTypeName(messageType));
+            }
+            continue;
+        }
+
+        if (verboseDhcp) {
+            char address[16];
+            formatIpv4(offer.ip, address);
+            fprintf(stderr, "%s: attempt %u got DHCPOFFER for %s\n", device,
+                    attempt + 1, address);
         }
 
         if (!offer.haveServerId) {
@@ -368,23 +449,49 @@ static bool acquireDhcpLease(int fd, const uint8_t localMac[6],
             continue;
         }
 
+        if (verboseDhcp) {
+            fprintf(stderr, "%s: attempt %u send DHCPREQUEST\n", device,
+                    attempt + 1);
+        }
         sendDhcpMessage(fd, localMac, transactionId, DHCPREQUEST, offer.ip,
                 offer.serverId);
 
         struct DhcpLease ack = {};
+        struct DhcpDebugStats requestStats = {};
         if (!waitForDhcpMessage(fd, transactionId, localMac, timeoutMs,
-                &messageType, &ack)) {
+                &messageType, &ack, &requestStats)) {
+            if (verboseDhcp) {
+                printDebugStats(device, "request timeout", attempt + 1,
+                        &requestStats);
+            }
             continue;
         }
 
         if (messageType == DHCPNAK) {
+            if (verboseDhcp) {
+                fprintf(stderr, "%s: attempt %u received DHCPNAK\n", device,
+                        attempt + 1);
+            }
             warnx("received DHCPNAK");
             continue;
         }
-        if (messageType != DHCPACK) continue;
+        if (messageType != DHCPACK) {
+            if (verboseDhcp) {
+                fprintf(stderr, "%s: attempt %u unexpected %s while waiting "
+                        "for DHCPACK\n", device, attempt + 1,
+                        dhcpMessageTypeName(messageType));
+            }
+            continue;
+        }
 
         mergeLease(&ack, &offer);
         *finalLease = ack;
+        if (verboseDhcp) {
+            char address[16];
+            formatIpv4(finalLease->ip, address);
+            fprintf(stderr, "%s: attempt %u got DHCPACK for %s\n", device,
+                    attempt + 1, address);
+        }
         return true;
     }
 
@@ -415,6 +522,17 @@ static uint16_t calculateChecksum(const void* buffer, size_t length) {
     return (uint16_t) ~sum;
 }
 
+static const char* dhcpMessageTypeName(int messageType) {
+    switch (messageType) {
+    case DHCPDISCOVER: return "DHCPDISCOVER";
+    case DHCPOFFER: return "DHCPOFFER";
+    case DHCPREQUEST: return "DHCPREQUEST";
+    case DHCPACK: return "DHCPACK";
+    case DHCPNAK: return "DHCPNAK";
+    default: return "unknown DHCP message";
+    }
+}
+
 static int64_t elapsedNanoseconds(const struct timespec* start,
         const struct timespec* end) {
     return (end->tv_sec - start->tv_sec) * 1000000000LL +
@@ -426,45 +544,9 @@ static void formatIpv4(const uint8_t address[4], char buffer[16]) {
             address[3]);
 }
 
-static bool getIpv4Payload(const uint8_t* frame, size_t frameLength,
-        uint8_t expectedProtocol, const uint8_t** payload,
-        size_t* payloadLength) {
-    if (frameLength < sizeof(struct EthernetHeader) + sizeof(struct Ipv4Header)) {
-        return false;
-    }
-
-    const struct EthernetHeader* ethernetHeader =
-            (const struct EthernetHeader*) frame;
-    if (be16toh(ethernetHeader->etherType) != ETHERTYPE_IPV4) return false;
-
-    const uint8_t* ipBuffer = frame + sizeof(*ethernetHeader);
-    const struct Ipv4Header* ipv4 = (const struct Ipv4Header*) ipBuffer;
-    uint8_t version = ipv4->versionAndIhl >> 4;
-    uint8_t ihl = ipv4->versionAndIhl & 0xF;
-    size_t headerLength = (size_t) ihl * 4;
-
-    if (version != IPV4_VERSION || ihl < IPV4_MIN_IHL ||
-            frameLength < sizeof(*ethernetHeader) + headerLength) {
-        return false;
-    }
-    if (calculateChecksum(ipBuffer, headerLength) != 0) return false;
-
-    uint16_t totalLength = be16toh(ipv4->totalLength);
-    if (totalLength < headerLength ||
-            frameLength < sizeof(*ethernetHeader) + totalLength) {
-        return false;
-    }
-
-    uint16_t fragmentInfo = be16toh(ipv4->flagsAndFragmentOffset);
-    if (ipv4->protocol != expectedProtocol ||
-            (fragmentInfo & IPV4_FLAG_MORE_FRAGMENTS) != 0 ||
-            (fragmentInfo & IPV4_FRAGMENT_OFFSET_MASK) != 0) {
-        return false;
-    }
-
-    *payload = ipBuffer + headerLength;
-    *payloadLength = totalLength - headerLength;
-    return true;
+static void formatMac(const uint8_t address[6], char buffer[18]) {
+    snprintf(buffer, 18, "%02x:%02x:%02x:%02x:%02x:%02x", address[0],
+            address[1], address[2], address[3], address[4], address[5]);
 }
 
 static void handleSignal(int signalNumber) {
@@ -526,43 +608,83 @@ static long parseLong(const char* string, const char* option, long min,
     return value;
 }
 
-static bool parseDhcpMessage(const uint8_t* frame, size_t frameLength,
+static enum DhcpParseResult parseDhcpMessage(const uint8_t* frame,
+        size_t frameLength,
         uint32_t transactionId, const uint8_t localMac[6], int* messageType,
         struct DhcpLease* lease) {
-    const uint8_t* payload;
-    size_t payloadLength;
-    if (!getIpv4Payload(frame, frameLength, IPV4_PROTOCOL_UDP, &payload,
-            &payloadLength)) {
-        return false;
+    if (frameLength < sizeof(struct EthernetHeader) + sizeof(struct Ipv4Header)) {
+        return DHCP_PARSE_NOT_IPV4;
     }
+
+    const struct EthernetHeader* ethernetHeader =
+            (const struct EthernetHeader*) frame;
+    if (be16toh(ethernetHeader->etherType) != ETHERTYPE_IPV4) {
+        return DHCP_PARSE_NOT_IPV4;
+    }
+
+    const uint8_t* ipBuffer = frame + sizeof(*ethernetHeader);
+    const struct Ipv4Header* ipv4 = (const struct Ipv4Header*) ipBuffer;
+    uint8_t version = ipv4->versionAndIhl >> 4;
+    uint8_t ihl = ipv4->versionAndIhl & 0xF;
+    size_t headerLength = (size_t) ihl * 4;
+
+    if (version != IPV4_VERSION || ihl < IPV4_MIN_IHL ||
+            frameLength < sizeof(*ethernetHeader) + headerLength) {
+        return DHCP_PARSE_BAD_IPV4;
+    }
+    if (calculateChecksum(ipBuffer, headerLength) != 0) {
+        return DHCP_PARSE_BAD_IPV4;
+    }
+
+    uint16_t totalLength = be16toh(ipv4->totalLength);
+    if (totalLength < headerLength ||
+            frameLength < sizeof(*ethernetHeader) + totalLength) {
+        return DHCP_PARSE_BAD_IPV4;
+    }
+
+    uint16_t fragmentInfo = be16toh(ipv4->flagsAndFragmentOffset);
+    if ((fragmentInfo & IPV4_FLAG_MORE_FRAGMENTS) != 0 ||
+            (fragmentInfo & IPV4_FRAGMENT_OFFSET_MASK) != 0) {
+        return DHCP_PARSE_BAD_IPV4;
+    }
+    if (ipv4->protocol != IPV4_PROTOCOL_UDP) return DHCP_PARSE_NOT_UDP;
+
+    const uint8_t* payload = ipBuffer + headerLength;
+    size_t payloadLength = totalLength - headerLength;
 
     if (payloadLength < sizeof(struct UdpHeader) + sizeof(struct BootpHeader) +
             sizeof(uint32_t)) {
-        return false;
+        return DHCP_PARSE_TRUNCATED_UDP;
     }
 
     const struct UdpHeader* udp = (const struct UdpHeader*) payload;
     uint16_t udpLength = be16toh(udp->length);
     if (be16toh(udp->sourcePort) != DHCP_SERVER_PORT ||
-            be16toh(udp->destinationPort) != DHCP_CLIENT_PORT ||
-            udpLength < sizeof(*udp) + sizeof(struct BootpHeader) +
+            be16toh(udp->destinationPort) != DHCP_CLIENT_PORT) {
+        return DHCP_PARSE_NOT_DHCP_PORTS;
+    }
+    if (udpLength < sizeof(*udp) + sizeof(struct BootpHeader) +
             sizeof(uint32_t) || udpLength > payloadLength) {
-        return false;
+        return DHCP_PARSE_TRUNCATED_UDP;
     }
 
     const uint8_t* dhcpBuffer = payload + sizeof(*udp);
     size_t dhcpLength = udpLength - sizeof(*udp);
     const struct BootpHeader* bootp = (const struct BootpHeader*) dhcpBuffer;
     if (bootp->op != 2 || bootp->hardwareType != 1 ||
-            bootp->hardwareLength != 6 ||
-            be32toh(bootp->transactionId) != transactionId ||
-            memcmp(bootp->clientHardwareAddress, localMac, 6) != 0) {
-        return false;
+            bootp->hardwareLength != 6) {
+        return DHCP_PARSE_BAD_BOOTP;
+    }
+    if (be32toh(bootp->transactionId) != transactionId) {
+        return DHCP_PARSE_WRONG_TRANSACTION;
+    }
+    if (memcmp(bootp->clientHardwareAddress, localMac, 6) != 0) {
+        return DHCP_PARSE_WRONG_CLIENT_MAC;
     }
 
     uint32_t magic = be32toh(*(const uint32_t*) (dhcpBuffer +
             sizeof(*bootp)));
-    if (magic != DHCP_MAGIC) return false;
+    if (magic != DHCP_MAGIC) return DHCP_PARSE_BAD_MAGIC;
 
     memset(lease, 0, sizeof(*lease));
     memcpy(lease->ip, bootp->yourIp, 4);
@@ -573,10 +695,10 @@ static bool parseDhcpMessage(const uint8_t* frame, size_t frameLength,
         uint8_t option = dhcpBuffer[offset++];
         if (option == 0) continue;
         if (option == DHCP_OPTION_END) break;
-        if (offset >= dhcpLength) return false;
+        if (offset >= dhcpLength) return DHCP_PARSE_BAD_OPTIONS;
 
         uint8_t length = dhcpBuffer[offset++];
-        if (offset + length > dhcpLength) return false;
+        if (offset + length > dhcpLength) return DHCP_PARSE_BAD_OPTIONS;
 
         switch (option) {
         case DHCP_OPTION_MESSAGE_TYPE:
@@ -637,7 +759,23 @@ static bool parseDhcpMessage(const uint8_t* frame, size_t frameLength,
         lease->haveServerId = true;
     }
 
-    return *messageType != 0;
+    return *messageType != 0 ? DHCP_PARSE_MATCH : DHCP_PARSE_NO_MESSAGE_TYPE;
+}
+
+static void printDebugStats(const char* device, const char* phase,
+        unsigned int attempt, const struct DhcpDebugStats* stats) {
+    fprintf(stderr, "%s: attempt %u %s, frames=%" PRIu32
+            " matched=%" PRIu32 " non-ipv4=%" PRIu32 " bad-ipv4=%" PRIu32
+            " non-udp=%" PRIu32 " bad-udp=%" PRIu32
+            " wrong-ports=%" PRIu32 " bad-bootp=%" PRIu32
+            " wrong-xid=%" PRIu32 " wrong-mac=%" PRIu32
+            " bad-magic=%" PRIu32 " bad-options=%" PRIu32
+            " no-type=%" PRIu32 "\n", device, attempt, phase,
+            stats->framesRead, stats->matched, stats->nonIpv4,
+            stats->badIpv4, stats->nonUdp, stats->truncatedUdp,
+            stats->wrongPorts, stats->badBootp, stats->wrongTransaction,
+            stats->wrongClientMac, stats->badMagic, stats->badOptions,
+            stats->noMessageType);
 }
 
 static void sendDhcpMessage(int fd, const uint8_t localMac[6],
@@ -747,11 +885,12 @@ static void sendDhcpMessage(int fd, const uint8_t localMac[6],
 
 static bool waitForDhcpMessage(int fd, uint32_t transactionId,
         const uint8_t localMac[6], unsigned int timeoutMs, int* messageType,
-        struct DhcpLease* lease) {
+        struct DhcpLease* lease, struct DhcpDebugStats* stats) {
     struct pollfd pfd = { .fd = fd, .events = POLLIN };
     uint8_t frame[NET_MAX_FRAME_SIZE];
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
+    memset(stats, 0, sizeof(*stats));
 
     while (!interrupted) {
         struct timespec now;
@@ -775,9 +914,47 @@ static bool waitForDhcpMessage(int fd, uint32_t transactionId,
             err(1, "read");
         }
 
-        if (parseDhcpMessage(frame, (size_t) bytesRead, transactionId,
-                localMac, messageType, lease)) {
+        stats->framesRead++;
+        enum DhcpParseResult parseResult = parseDhcpMessage(frame,
+                (size_t) bytesRead, transactionId, localMac, messageType,
+                lease);
+        switch (parseResult) {
+        case DHCP_PARSE_MATCH:
+            stats->matched++;
             return true;
+        case DHCP_PARSE_NOT_IPV4:
+            stats->nonIpv4++;
+            break;
+        case DHCP_PARSE_BAD_IPV4:
+            stats->badIpv4++;
+            break;
+        case DHCP_PARSE_NOT_UDP:
+            stats->nonUdp++;
+            break;
+        case DHCP_PARSE_TRUNCATED_UDP:
+            stats->truncatedUdp++;
+            break;
+        case DHCP_PARSE_NOT_DHCP_PORTS:
+            stats->wrongPorts++;
+            break;
+        case DHCP_PARSE_BAD_BOOTP:
+            stats->badBootp++;
+            break;
+        case DHCP_PARSE_WRONG_TRANSACTION:
+            stats->wrongTransaction++;
+            break;
+        case DHCP_PARSE_WRONG_CLIENT_MAC:
+            stats->wrongClientMac++;
+            break;
+        case DHCP_PARSE_BAD_MAGIC:
+            stats->badMagic++;
+            break;
+        case DHCP_PARSE_BAD_OPTIONS:
+            stats->badOptions++;
+            break;
+        case DHCP_PARSE_NO_MESSAGE_TYPE:
+            stats->noMessageType++;
+            break;
         }
     }
 

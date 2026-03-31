@@ -54,6 +54,7 @@ enum RegisterOffsets {
     RxDescAddrLow = 0xE4,
     RxDescAddrHigh = 0xE8,
     MaxTxPacketSize = 0xEC,
+    MISC = 0xF0,
 };
 
 enum RegisterContent {
@@ -82,6 +83,8 @@ enum RegisterContent {
     AcceptAllPhys = 0x01,
 
     RX128_INT_EN = (1 << 15),
+    RX_MULTI_EN = (1 << 14),
+    RX_EARLY_OFF = (1 << 11),
     RX_DMA_BURST = (7 << 8),
 
     TxInterFrameGap = (3 << 24),
@@ -106,12 +109,15 @@ enum RegisterContent {
     RxPacketSizeMask = 0x3FFF,
 
     TxPacketMax = (8064 >> 7),
+
+    RXDV_GATED_EN = (1 << 19),
 };
 
 static const uint16_t rtl8169InterruptMask = SYSErr | TxDescUnavail |
         RxFIFOOver | LinkChg | RxOverflow | TxErr | TxOK | RxErr | RxOK;
 static const uint32_t rtl8169TxConfig = TxInterFrameGap | TxDmaBurst;
-static const uint32_t rtl8169BaseRxConfig = RX128_INT_EN | RX_DMA_BURST;
+static const uint32_t rtl8169BaseRxConfig = RX128_INT_EN | RX_MULTI_EN |
+        RX_EARLY_OFF | RX_DMA_BURST;
 
 struct PACKED TxDesc {
     uint32_t opts1;
@@ -180,6 +186,7 @@ private:
     void initializeDescriptorRingsLocked();
     void markRxDescriptorAvailable(size_t index);
     void programReceiveFilterLocked();
+    void logHardwareStateLocked(const char* reason, uint16_t status);
     void restartHardwareLocked();
 private:
     static constexpr size_t txDescCount = 64;
@@ -201,10 +208,20 @@ private:
     uint32_t curTx;
     uint32_t dirtyTx;
     uint16_t cpCmd;
+    uint16_t xid;
+    uint8_t pciRevision;
     bool promiscuous;
     bool linkUp;
     bool irqJobQueued;
     uint16_t pendingStatus;
+    uint32_t txPacketsSubmitted;
+    uint32_t txPacketsCompleted;
+    uint32_t rxPacketsAccepted;
+    uint32_t rxPacketsDropped;
+    uint32_t debugPollCountdown;
+    bool loggedFirstTxComplete;
+    bool loggedFirstRxFrame;
+    bool loggedFirstRxDrop;
     uint8_t mac[6];
     IrqHandler irqHandler;
     WorkerJob irqJob;
@@ -257,8 +274,12 @@ Rtl8169Device::Rtl8169Device(uint8_t bus, uint8_t device, uint8_t function,
         int irq) : nextDevice(nullptr), bus(bus), device(device),
         function(function), irq(irq), mmioBase(0), txDescArea(), rxDescArea(),
         txBuffers(), rxBuffers(), txDescs(nullptr), rxDescs(nullptr), curRx(0),
-        curTx(0), dirtyTx(0), cpCmd(0), promiscuous(false), linkUp(false),
-        irqJobQueued(false), pendingStatus(0), mac(), irqHandler(), irqJob() {
+        curTx(0), dirtyTx(0), cpCmd(0), xid(0), pciRevision(0),
+        promiscuous(false), linkUp(false), irqJobQueued(false),
+        pendingStatus(0), txPacketsSubmitted(0), txPacketsCompleted(0),
+        rxPacketsAccepted(0), rxPacketsDropped(0), debugPollCountdown(1000),
+        loggedFirstTxComplete(false), loggedFirstRxFrame(false),
+        loggedFirstRxDrop(false), mac(), irqHandler(), irqJob() {
     if (!mapMmioBar()) FAIL_CONSTRUCTOR;
 
     uint32_t command = Pci::readConfig(bus, device, function,
@@ -269,7 +290,10 @@ Rtl8169Device::Rtl8169Device(uint8_t bus, uint8_t device, uint8_t function,
 
     if (read32(TxConfig) == 0xFFFFFFFFU) FAIL_CONSTRUCTOR;
 
+    xid = (read32(TxConfig) >> 20) & 0xFCF;
     cpCmd = read16(CPlusCmd) & CPlusCmdMask;
+    pciRevision = Pci::readConfig(bus, device, function,
+            offsetof(PciHeader, revisionId)) & 0xFF;
 
     if (!initializeMemory()) FAIL_CONSTRUCTOR;
     if (!initializeRegisters()) FAIL_CONSTRUCTOR;
@@ -412,6 +436,9 @@ bool Rtl8169Device::initializeRegisters() {
     write32(TxDescStartAddrLow, txDescArea.physical & 0xFFFFFFFFU);
     write32(RxDescAddrHigh, rxDescArea.physical >> 32);
     write32(RxDescAddrLow, rxDescArea.physical & 0xFFFFFFFFU);
+    // Linux clears RXDV gating on newer RTL8111/8168/8411 revisions to avoid
+    // receive path stalls after link-up.
+    write32(MISC, read32(MISC) & ~RXDV_GATED_EN);
     write8(ChipCmd, CmdTxEnable | CmdRxEnable);
     write32(RxConfig, rtl8169BaseRxConfig);
     write32(TxConfig, rtl8169TxConfig);
@@ -432,6 +459,10 @@ bool Rtl8169Device::initializeRegisters() {
     mac[5] = (mac4 >> 8) & 0xFF;
 
     linkUp = read8(PHYstatus) & LinkStatus;
+    Log::printf("rtl8169 %u/%u/%u: XID %03X rev %02X MAC %02X:%02X:%02X:%02X:%02X:%02X irq %d link %s cp 0x%X rxcfg 0x%X\n",
+            bus, device, function, xid, pciRevision, mac[0], mac[1], mac[2],
+            mac[3], mac[4], mac[5], irq, linkUp ? "up" : "down", cpCmd,
+            read32(RxConfig));
     return true;
 }
 
@@ -469,6 +500,7 @@ bool Rtl8169Device::transmitFrameLocked(const void* frame, size_t size) {
     txDescs[entry].opts1 = opts1 | DescOwn;
     write8(TxPoll, NPQ);
     curTx++;
+    txPacketsSubmitted++;
     return true;
 }
 
@@ -490,7 +522,14 @@ bool Rtl8169Device::reapTransmittedLocked() {
         txDescs[entry].opts1 = entry == txDescCount - 1 ?
                 (uint32_t) RingEnd : 0;
         dirtyTx++;
+        txPacketsCompleted++;
         reclaimed = true;
+    }
+
+    if (reclaimed && !loggedFirstTxComplete) {
+        loggedFirstTxComplete = true;
+        Log::printf("rtl8169 %u/%u/%u: transmit path alive (%u completions)\n",
+                bus, device, function, txPacketsCompleted);
     }
 
     if (reclaimed) kthread_cond_broadcast(&writeCond);
@@ -512,6 +551,12 @@ bool Rtl8169Device::receiveFramesLocked() {
                 (FirstFrag | LastFrag) ||
                 (status & (RxRES | RxRWT | RxRUNT | RxCRC)) ||
                 packetSize < 4 || packetSize > NET_MAX_FRAME_SIZE + 4) {
+            rxPacketsDropped++;
+            if (!loggedFirstRxDrop) {
+                loggedFirstRxDrop = true;
+                Log::printf("rtl8169 %u/%u/%u: dropped RX frame status=0x%X size=%zu\n",
+                        bus, device, function, status, packetSize);
+            }
             markRxDescriptorAvailable(entry);
             curRx++;
             continue;
@@ -519,12 +564,32 @@ bool Rtl8169Device::receiveFramesLocked() {
 
         queueReceivedFrameLocked((void*) rxBuffers[entry].virtualAddress,
                 packetSize - 4);
+        rxPacketsAccepted++;
+        if (!loggedFirstRxFrame) {
+            loggedFirstRxFrame = true;
+            Log::printf("rtl8169 %u/%u/%u: receive path alive (first frame %zu bytes)\n",
+                    bus, device, function, packetSize - 4);
+        }
         markRxDescriptorAvailable(entry);
         curRx++;
         received = true;
     }
 
     return received;
+}
+
+void Rtl8169Device::logHardwareStateLocked(const char* reason, uint16_t status) {
+    unsigned int txEntry = dirtyTx % txDescCount;
+    unsigned int rxEntry = curRx % rxDescCount;
+    uint32_t txDesc = txDescs ? txDescs[txEntry].opts1 : 0;
+    uint32_t rxDesc = rxDescs ? rxDescs[rxEntry].opts1 : 0;
+    uint8_t chipCmd = read8(ChipCmd);
+    uint8_t phyStatus = read8(PHYstatus);
+
+    Log::printf("rtl8169 %u/%u/%u: %s status=0x%X chip=0x%X phy=0x%X tx=%u/%u rx_ok=%u rx_drop=%u txd[%u]=0x%X rxd[%u]=0x%X\n",
+            bus, device, function, reason, status, chipCmd, phyStatus,
+            txPacketsCompleted, txPacketsSubmitted, rxPacketsAccepted,
+            rxPacketsDropped, txEntry, txDesc, rxEntry, rxDesc);
 }
 
 void Rtl8169Device::restartHardwareLocked() {
@@ -545,6 +610,7 @@ void Rtl8169Device::restartHardwareLocked() {
     write32(TxDescStartAddrLow, txDescArea.physical & 0xFFFFFFFFU);
     write32(RxDescAddrHigh, rxDescArea.physical >> 32);
     write32(RxDescAddrLow, rxDescArea.physical & 0xFFFFFFFFU);
+    write32(MISC, read32(MISC) & ~RXDV_GATED_EN);
     write8(ChipCmd, CmdTxEnable | CmdRxEnable);
     write32(RxConfig, rtl8169BaseRxConfig);
     write32(TxConfig, rtl8169TxConfig);
@@ -557,6 +623,14 @@ void Rtl8169Device::restartHardwareLocked() {
     dirtyTx = 0;
     curTx = 0;
     curRx = 0;
+    txPacketsCompleted = 0;
+    txPacketsSubmitted = 0;
+    rxPacketsAccepted = 0;
+    rxPacketsDropped = 0;
+    debugPollCountdown = 1000;
+    loggedFirstTxComplete = false;
+    loggedFirstRxFrame = false;
+    loggedFirstRxDrop = false;
     updateLinkStateLocked();
     notifyStateChangedLocked();
 }
@@ -592,6 +666,15 @@ void Rtl8169Device::pollHardware() {
     notify |= reapTransmittedLocked();
     notify |= receiveFramesLocked();
     notify |= updateLinkStateLocked();
+    if (debugPollCountdown > 0) {
+        debugPollCountdown--;
+    } else {
+        if (txPacketsSubmitted != txPacketsCompleted ||
+                rxPacketsAccepted == 0 || rxPacketsDropped != 0) {
+            logHardwareStateLocked("poll", status);
+        }
+        debugPollCountdown = 1000;
+    }
     if (notify) notifyStateChangedLocked();
 }
 
