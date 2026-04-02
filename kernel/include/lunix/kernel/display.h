@@ -104,8 +104,37 @@ public:
     virtual ~GraphicsDriver() = default;
     virtual bool isSupportedMode(video_mode mode) = 0;
     virtual vaddr_t setVideoMode(video_mode* mode) = 0;
+    virtual bool gpuFillRect(uint32_t rgbaColor,
+                             unsigned x, unsigned y,
+                             unsigned w, unsigned h) {
+        (void)rgbaColor; (void)x; (void)y; (void)w; (void)h;
+        return false;
+    }
+    /**
+     * gpuBlit — copy a rectangle within the current framebuffer using SDMA.
+     * (srcX,srcY) → (dstX,dstY), size (w,h) pixels.
+     * Called with pixel coordinates.  Falls back gracefully when unavailable.
+     */
+    virtual bool gpuBlit(unsigned srcX, unsigned srcY,
+                         unsigned dstX, unsigned dstY,
+                         unsigned w, unsigned h) {
+        (void)srcX; (void)srcY; (void)dstX; (void)dstY; (void)w; (void)h;
+        return false;
+    }
 };
 
 extern GraphicsDriver* graphicsDriver;
+
+struct BootFramebufferInfo {
+    paddr_t physicalAddress;
+    vaddr_t virtualAddress;
+    size_t size;
+    size_t pitch;
+    video_mode mode;
+};
+
+void setBootFramebufferInfo(paddr_t physicalAddress, vaddr_t virtualAddress,
+        size_t size, size_t pitch, video_mode mode);
+bool getBootFramebufferInfo(BootFramebufferInfo& info);
 
 #endif

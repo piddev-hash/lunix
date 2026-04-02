@@ -22,6 +22,7 @@
 
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <lunix/mman.h>
 #include <lunix/stat.h>
 #include <lunix/kernel/kthread.h>
 #include <lunix/kernel/refcount.h>
@@ -51,6 +52,7 @@ public:
     virtual int listen(int backlog);
     virtual off_t lseek(off_t offset, int whence);
     virtual int mkdir(const char* name, mode_t mode);
+    virtual void* mmap(size_t size, int protection, int flags, off_t offset);
     virtual int mount(FileSystem* filesystem);
     virtual void onLink();
     virtual bool onUnlink(bool force);

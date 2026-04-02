@@ -37,9 +37,27 @@ asm(".pushsection .rodata\n"
 ".popsection");
 extern const uint8_t vgafont[];
 GraphicsDriver* graphicsDriver;
+static BootFramebufferInfo bootFramebufferInfo;
+static bool haveBootFramebufferInfo;
 
 static const size_t charHeight = 16;
 static const size_t charWidth = 9;
+
+void setBootFramebufferInfo(paddr_t physicalAddress, vaddr_t virtualAddress,
+        size_t size, size_t pitch, video_mode mode) {
+    bootFramebufferInfo.physicalAddress = physicalAddress;
+    bootFramebufferInfo.virtualAddress = virtualAddress;
+    bootFramebufferInfo.size = size;
+    bootFramebufferInfo.pitch = pitch;
+    bootFramebufferInfo.mode = mode;
+    haveBootFramebufferInfo = true;
+}
+
+bool getBootFramebufferInfo(BootFramebufferInfo& info) {
+    if (!haveBootFramebufferInfo) return false;
+    info = bootFramebufferInfo;
+    return true;
+}
 
 Display::Display(video_mode mode, char* buffer, size_t pitch)
         : Vnode(S_IFCHR | 0666, DevFS::dev) {
@@ -81,6 +99,13 @@ ALWAYS_INLINE void Display::setPixelColor(char* addr,
         addr[1] = (rgbColor >> 8) & 0xFF;
         addr[2] = (rgbColor >> 16) & 0xFF;
     }
+}
+
+static ALWAYS_INLINE bool hasVisiblePixels(const uint32_t* src, size_t width) {
+    for (size_t i = 0; i < width; i++) {
+        if (src[i] & 0xFF000000U) return true;
+    }
+    return false;
 }
 
 void Display::clear(CharPos from, CharPos to, Color color) {
@@ -201,6 +226,29 @@ void Display::scroll(unsigned int lines, Color color, bool up /*= true*/) {
                 }
             }
         }
+
+        /* GPU-accelerated scroll: blit framebuffer content up, then GPU-fill
+         * the newly blank strip at the bottom. */
+        if (graphicsDriver && mode.video_bpp != 0) {
+            unsigned scrollPx = lines * charHeight;
+            unsigned keepH = mode.video_height > scrollPx ?
+                    mode.video_height - scrollPx : 0;
+            if (keepH && graphicsDriver->gpuBlit(0, scrollPx, 0, 0,
+                    mode.video_width, keepH)) {
+                /* Clear the newly exposed strip */
+                uint32_t bgRgba = color.bgColor | 0xFF000000U;
+                graphicsDriver->gpuFillRect(bgRgba,
+                        0, keepH,
+                        mode.video_width, scrollPx);
+                /* Mark all character cells that were moved as clean
+                 * (the framebuffer already reflects them via GPU). */
+                for (unsigned int y = 0; y < rows - lines; y++) {
+                    for (unsigned int x = 0; x < columns; x++) {
+                        doubleBuffer[x + y * columns].modified = false;
+                    }
+                }
+            }
+        }
     } else {
         for (unsigned int y = rows - 1; y < rows; y--) {
             for (unsigned int x = 0; x < columns; x++) {
@@ -210,6 +258,24 @@ void Display::scroll(unsigned int lines, Color color, bool up /*= true*/) {
                     doubleBuffer[x + y * columns].wc = entry.wc;
                     doubleBuffer[x + y * columns].color = entry.color;
                     doubleBuffer[x + y * columns].modified = true;
+                }
+            }
+        }
+
+        if (graphicsDriver && mode.video_bpp != 0) {
+            unsigned scrollPx = lines * charHeight;
+            unsigned keepH = mode.video_height > scrollPx ?
+                    mode.video_height - scrollPx : 0;
+            if (keepH && graphicsDriver->gpuBlit(0, 0, 0, scrollPx,
+                    mode.video_width, keepH)) {
+                uint32_t bgRgba = color.bgColor | 0xFF000000U;
+                graphicsDriver->gpuFillRect(bgRgba,
+                        0, 0,
+                        mode.video_width, scrollPx);
+                for (unsigned int y = lines; y < rows; y++) {
+                    for (unsigned int x = 0; x < columns; x++) {
+                        doubleBuffer[x + y * columns].modified = false;
+                    }
                 }
             }
         }
@@ -384,6 +450,29 @@ void Display::update() {
     invalidated = false;
 
     for (unsigned int y = 0; y < rows; y++) {
+        /* Optimisation: if all cells in this row are blank (wc==0) with the
+         * same background colour and they are all marked modified, use a
+         * single GPU fill for the entire row instead of per-cell redraws. */
+        if (graphicsDriver && mode.video_bpp != 0 && !redrawAll) {
+            bool allBlank = true;
+            uint32_t rowBg = doubleBuffer[0 + y * columns].color.bgColor;
+            for (unsigned int x = 0; x < columns && allBlank; x++) {
+                CharBufferEntry& e = doubleBuffer[x + y * columns];
+                if (!e.modified || e.wc != L'\0' || e.color.bgColor != rowBg)
+                    allBlank = false;
+            }
+            if (allBlank) {
+                unsigned py = y * charHeight;
+                if (graphicsDriver->gpuFillRect(
+                        rowBg | 0xFF000000U,
+                        0, py, mode.video_width, charHeight)) {
+                    for (unsigned int x = 0; x < columns; x++)
+                        doubleBuffer[x + y * columns].modified = false;
+                    continue;
+                }
+            }
+        }
+
         for (unsigned int x = 0; x < columns; x++) {
             if (redrawAll || doubleBuffer[x + y * columns].modified) {
                 redraw({x, y});
@@ -454,13 +543,62 @@ int Display::devctl(int command, void* restrict data, size_t size,
         }
 
         const struct display_draw* draw = (const struct display_draw*) data;
-        for (size_t y = 0; y < draw->draw_height; y++) {
+        size_t bytesPerPixel = mode.video_bpp / 8;
+        size_t destX = draw->lfb_x + draw->draw_x;
+        size_t destY = draw->lfb_y + draw->draw_y;
+
+        if (destX >= mode.video_width || destY >= mode.video_height ||
+                draw->draw_width == 0 || draw->draw_height == 0) {
+            *info = 0;
+            return 0;
+        }
+
+        size_t drawWidth = draw->draw_width;
+        size_t drawHeight = draw->draw_height;
+        if (drawWidth > mode.video_width - destX) {
+            drawWidth = mode.video_width - destX;
+        }
+        if (drawHeight > mode.video_height - destY) {
+            drawHeight = mode.video_height - destY;
+        }
+
+        for (size_t y = 0; y < drawHeight; y++) {
             const uint32_t* row = (const uint32_t*) ((uintptr_t) draw->lfb +
-                    (draw->draw_y + y) * draw->lfb_pitch);
-            for (size_t x = 0; x < draw->draw_width; x++) {
-                char* addr = buffer + (y + draw->lfb_y + draw->draw_y) * pitch +
-                        (x + draw->lfb_x + draw->draw_x) * mode.video_bpp / 8;
-                setPixelColor(addr, row[draw->draw_x + x]);
+                    (draw->draw_y + y) * draw->lfb_pitch) + draw->draw_x;
+            char* dest = buffer + (destY + y) * pitch + destX * bytesPerPixel;
+
+            if (mode.video_bpp == 32) {
+                size_t x = 0;
+                while (x < drawWidth) {
+                    while (x < drawWidth && (row[x] & 0xFF000000U) == 0) {
+                        x++;
+                    }
+                    size_t runStart = x;
+                    while (x < drawWidth && (row[x] & 0xFF000000U) != 0) {
+                        x++;
+                    }
+                    if (runStart < x) {
+                        memcpy(dest + runStart * sizeof(uint32_t),
+                                row + runStart,
+                                (x - runStart) * sizeof(uint32_t));
+                    }
+                }
+            } else if (mode.video_bpp == 24) {
+                if (!hasVisiblePixels(row, drawWidth)) continue;
+
+                for (size_t x = 0; x < drawWidth; x++) {
+                    uint32_t rgbColor = row[x];
+                    if ((rgbColor & 0xFF000000U) == 0) continue;
+
+                    char* addr = dest + x * 3;
+                    addr[0] = (rgbColor >> 0) & 0xFF;
+                    addr[1] = (rgbColor >> 8) & 0xFF;
+                    addr[2] = (rgbColor >> 16) & 0xFF;
+                }
+            } else {
+                for (size_t x = 0; x < drawWidth; x++) {
+                    setPixelColor(dest + x * bytesPerPixel, row[x]);
+                }
             }
         }
 

@@ -299,7 +299,6 @@ static void startRtl8139PollThread(void*) {
 static void ensureRtl8139PollThread() {
     if (rtl8139PollThreadStarted) return;
     rtl8139PollThreadStarted = true;
-    Log::printf("rtl8139: polling fallback enabled\n");
     Thread::createKernelThread(startRtl8139PollThread, nullptr);
 }
 
@@ -693,6 +692,4 @@ void Rtl8139::initialize(uint8_t bus, uint8_t device, uint8_t function) {
     }
 
     NetworkDevice::registerDevice(nic);
-    Log::printf("rtl8139 %u/%u/%u initialized as raw Ethernet device\n", bus,
-            device, function);
 }

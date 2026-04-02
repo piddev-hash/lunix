@@ -23,6 +23,7 @@
 #include <lunix/kernel/list.h>
 
 #define SEG_NOUNMAP (1 << 16)
+#define SEG_MAPPED_PHYSICAL (1 << 17)
 
 class MemorySegment {
 public:

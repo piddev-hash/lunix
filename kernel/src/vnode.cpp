@@ -296,6 +296,12 @@ int Vnode::mkdir(const char* /*name*/, mode_t /*mode*/) {
     return -1;
 }
 
+void* Vnode::mmap(size_t /*size*/, int /*protection*/, int /*flags*/,
+        off_t /*offset*/) {
+    errno = ENOTSUP;
+    return MAP_FAILED;
+}
+
 int Vnode::mount(FileSystem* /*filesystem*/) {
     errno = ENOTDIR;
     return -1;

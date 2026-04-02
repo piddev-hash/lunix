@@ -467,21 +467,29 @@ int Syscall::mkdirat(int fd, const char* path, mode_t mode) {
 }
 
 static void* mmapImplementation(void* /*addr*/, size_t size,
-        int protection, int flags, int /*fd*/, off_t /*offset*/) {
-    if (size == 0 || !(flags & MAP_PRIVATE)) {
+        int protection, int flags, int fd, off_t offset) {
+    if (size == 0 || !(flags & MAP_PRIVATE) ||
+            (flags & ~(MAP_PRIVATE | MAP_ANONYMOUS))) {
         errno = EINVAL;
         return MAP_FAILED;
     }
 
+    size = ALIGNUP(size, PAGESIZE);
+    protection &= _PROT_FLAGS;
+
     if (flags & MAP_ANONYMOUS) {
         AddressSpace* addressSpace = Process::current()->addressSpace;
-        return (void*) addressSpace->mapMemory(ALIGNUP(size, PAGESIZE),
-                protection & _PROT_FLAGS);
+        return (void*) addressSpace->mapMemory(size, protection);
     }
 
-    // TODO: Implement other flags than MAP_ANONYMOUS
-    errno = ENOTSUP;
-    return MAP_FAILED;
+    if (fd < 0 || offset < 0 || !PAGE_ALIGNED((uint64_t) offset)) {
+        errno = EINVAL;
+        return MAP_FAILED;
+    }
+
+    Reference<FileDescription> descr = Process::current()->getFd(fd);
+    if (!descr) return MAP_FAILED;
+    return descr->vnode->mmap(size, protection, flags, offset);
 }
 
 void* Syscall::mmap(__mmapRequest* request) {

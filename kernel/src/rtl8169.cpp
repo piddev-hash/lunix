@@ -266,7 +266,6 @@ static void startRtl8169PollThread(void*) {
 static void ensureRtl8169PollThread() {
     if (rtl8169PollThreadStarted) return;
     rtl8169PollThreadStarted = true;
-    Log::printf("rtl8169: polling fallback enabled\n");
     Thread::createKernelThread(startRtl8169PollThread, nullptr);
 }
 
@@ -459,10 +458,6 @@ bool Rtl8169Device::initializeRegisters() {
     mac[5] = (mac4 >> 8) & 0xFF;
 
     linkUp = read8(PHYstatus) & LinkStatus;
-    Log::printf("rtl8169 %u/%u/%u: XID %03X rev %02X MAC %02X:%02X:%02X:%02X:%02X:%02X irq %d link %s cp 0x%X rxcfg 0x%X\n",
-            bus, device, function, xid, pciRevision, mac[0], mac[1], mac[2],
-            mac[3], mac[4], mac[5], irq, linkUp ? "up" : "down", cpCmd,
-            read32(RxConfig));
     return true;
 }
 
@@ -528,8 +523,6 @@ bool Rtl8169Device::reapTransmittedLocked() {
 
     if (reclaimed && !loggedFirstTxComplete) {
         loggedFirstTxComplete = true;
-        Log::printf("rtl8169 %u/%u/%u: transmit path alive (%u completions)\n",
-                bus, device, function, txPacketsCompleted);
     }
 
     if (reclaimed) kthread_cond_broadcast(&writeCond);
@@ -554,8 +547,6 @@ bool Rtl8169Device::receiveFramesLocked() {
             rxPacketsDropped++;
             if (!loggedFirstRxDrop) {
                 loggedFirstRxDrop = true;
-                Log::printf("rtl8169 %u/%u/%u: dropped RX frame status=0x%X size=%zu\n",
-                        bus, device, function, status, packetSize);
             }
             markRxDescriptorAvailable(entry);
             curRx++;
@@ -567,8 +558,6 @@ bool Rtl8169Device::receiveFramesLocked() {
         rxPacketsAccepted++;
         if (!loggedFirstRxFrame) {
             loggedFirstRxFrame = true;
-            Log::printf("rtl8169 %u/%u/%u: receive path alive (first frame %zu bytes)\n",
-                    bus, device, function, packetSize - 4);
         }
         markRxDescriptorAvailable(entry);
         curRx++;
@@ -579,17 +568,8 @@ bool Rtl8169Device::receiveFramesLocked() {
 }
 
 void Rtl8169Device::logHardwareStateLocked(const char* reason, uint16_t status) {
-    unsigned int txEntry = dirtyTx % txDescCount;
-    unsigned int rxEntry = curRx % rxDescCount;
-    uint32_t txDesc = txDescs ? txDescs[txEntry].opts1 : 0;
-    uint32_t rxDesc = rxDescs ? rxDescs[rxEntry].opts1 : 0;
-    uint8_t chipCmd = read8(ChipCmd);
-    uint8_t phyStatus = read8(PHYstatus);
-
-    Log::printf("rtl8169 %u/%u/%u: %s status=0x%X chip=0x%X phy=0x%X tx=%u/%u rx_ok=%u rx_drop=%u txd[%u]=0x%X rxd[%u]=0x%X\n",
-            bus, device, function, reason, status, chipCmd, phyStatus,
-            txPacketsCompleted, txPacketsSubmitted, rxPacketsAccepted,
-            rxPacketsDropped, txEntry, txDesc, rxEntry, rxDesc);
+    (void) reason;
+    (void) status;
 }
 
 void Rtl8169Device::restartHardwareLocked() {
@@ -739,6 +719,4 @@ void Rtl8169::initialize(uint8_t bus, uint8_t device, uint8_t function) {
     }
 
     NetworkDevice::registerDevice(nic);
-    Log::printf("rtl8169 %u/%u/%u initialized as raw Ethernet device\n", bus,
-            device, function);
 }

@@ -19,6 +19,7 @@
 
 #include <devctl.h>
 #include <stdlib.h>
+#include <string.h>
 #include <lunix/display.h>
 #include <lunix/mouse.h>
 #include "context.h"
@@ -253,11 +254,9 @@ static void redrawWindow(dxui_context* context, unsigned int id, dxui_dim dim,
     }
 
     size_t pitch = dim.width;
-    for (int y = rect.y; y < rect.y + rect.height; y++) {
-        for (int x = rect.x; x < rect.x + rect.width; x++) {
-            context->framebuffer[y * displayDim.width + x] =
-                    lfb[(y - rect.y) * pitch + (x - rect.x)];
-        }
+    for (int y = 0; y < rect.height; y++) {
+        memcpy(context->framebuffer + (rect.y + y) * displayDim.width + rect.x,
+                lfb + y * pitch, rect.width * sizeof(dxui_color));
     }
 
     rect.x = 0;
@@ -272,12 +271,11 @@ static void redrawWindowPart(dxui_context* context, unsigned int id,
 
     dxui_dim displayDim = context->displayDim;
 
-    for (int y = rect.y; y < rect.y + rect.height; y++) {
-        for (int x = rect.x; x < rect.x + rect.width; x++) {
-            context->framebuffer[(context->viewport.y + y) *
-                    displayDim.width + x + context->viewport.x] =
-                    lfb[y * pitch + x];
-        }
+    for (int y = 0; y < rect.height; y++) {
+        memcpy(context->framebuffer + (context->viewport.y + rect.y + y) *
+                displayDim.width + context->viewport.x + rect.x,
+                lfb + (rect.y + y) * pitch + rect.x,
+                rect.width * sizeof(dxui_color));
     }
 
     rect.x += context->viewport.x;

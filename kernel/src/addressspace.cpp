@@ -42,33 +42,42 @@ AddressSpace* AddressSpace::fork() {
     AddressSpace* result = new AddressSpace();
     if (!result) return nullptr;
     for (const auto& segment : segments) {
-        if (!(segment.flags & SEG_NOUNMAP)) {
-            // Copy the segment
-            size_t size = segment.size;
-            if (!result->mapMemory(segment.address, size, segment.flags)) {
+        if (segment.flags & SEG_NOUNMAP) continue;
+
+        size_t size = segment.size;
+        if (segment.flags & SEG_MAPPED_PHYSICAL) {
+            if (!result->mapFromOtherAddressSpace(this, segment.address, size,
+                    segment.flags)) {
                 delete result;
                 return nullptr;
             }
-
-            vaddr_t source = kernelSpace->mapFromOtherAddressSpace(this,
-                    segment.address, size, PROT_READ);
-            if (!source) {
-                delete result;
-                return nullptr;
-            }
-
-            vaddr_t dest = kernelSpace->mapFromOtherAddressSpace(result,
-                    segment.address, size, PROT_WRITE);
-            if (!dest) {
-                kernelSpace->unmapPhysical(source, size);
-                delete result;
-                return nullptr;
-            }
-
-            memcpy((void*) dest, (const void*) source, size);
-            kernelSpace->unmapPhysical(source, size);
-            kernelSpace->unmapPhysical(dest, size);
+            continue;
         }
+
+        // Copy normal RAM-backed segments.
+        if (!result->mapMemory(segment.address, size, segment.flags)) {
+            delete result;
+            return nullptr;
+        }
+
+        vaddr_t source = kernelSpace->mapFromOtherAddressSpace(this,
+                segment.address, size, PROT_READ);
+        if (!source) {
+            delete result;
+            return nullptr;
+        }
+
+        vaddr_t dest = kernelSpace->mapFromOtherAddressSpace(result,
+                segment.address, size, PROT_WRITE);
+        if (!dest) {
+            kernelSpace->unmapPhysical(source, size);
+            delete result;
+            return nullptr;
+        }
+
+        memcpy((void*) dest, (const void*) source, size);
+        kernelSpace->unmapPhysical(source, size);
+        kernelSpace->unmapPhysical(dest, size);
     }
 
     return result;
@@ -160,8 +169,9 @@ vaddr_t AddressSpace::mapPhysical(paddr_t physicalAddress, size_t size,
         int protection) {
     AutoLock lock(&mutex);
 
+    int segmentFlags = protection | SEG_MAPPED_PHYSICAL;
     vaddr_t virtualAddress = MemorySegment::findAndAddNewSegment(segments,
-            size, protection);
+            size, segmentFlags);
     if (!virtualAddress) return 0;
     for (size_t i = 0; i < size; i += PAGESIZE) {
         if (!mapAt(virtualAddress + i, physicalAddress + i, protection)) {
@@ -195,8 +205,21 @@ void AddressSpace::unmapMemory(vaddr_t virtualAddress, size_t size) {
     AutoLock lock(&mutex);
 
     for (size_t i = 0; i < size; i += PAGESIZE) {
-        paddr_t physicalAddress = getPhysicalAddress(virtualAddress + i);
-        unmap(virtualAddress + i);
+        vaddr_t address = virtualAddress + i;
+        auto currentSegment = Util::findIf(segments.begin(), segments.end(),
+                [address](const auto& segment) {
+                    return segment.address <= address &&
+                            segment.address + segment.size > address;
+                });
+
+        bool segmentFound = currentSegment != segments.end();
+        bool mappedPhysical = segmentFound &&
+                (currentSegment->flags & SEG_MAPPED_PHYSICAL);
+        paddr_t physicalAddress = segmentFound && !mappedPhysical ?
+                getPhysicalAddress(address) : 0;
+        unmap(address);
+
+        if (!segmentFound || mappedPhysical) continue;
 
         // Unlock the mutex because PhysicalMemory::pushPageFrame may need to
         // map pages.

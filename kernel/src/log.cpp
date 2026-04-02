@@ -58,6 +58,7 @@ void Log::earlyInitialize(const multiboot_info* multiboot) {
         console->display = new (displayBuf) Display(mode,
                 (char*) videoMapped, 160);
         console->updateDisplaySize();
+        setBootFramebufferInfo(0xB8000, videoMapped, PAGESIZE, 160, mode);
     } else if (fbTag->framebuffer_type == MULTIBOOT_FRAMEBUFFER_TYPE_RGB &&
             (fbTag->framebuffer_bpp == 24 || fbTag->framebuffer_bpp == 32)) {
         vaddr_t lfbMapping;
@@ -79,6 +80,9 @@ void Log::earlyInitialize(const multiboot_info* multiboot) {
         console->display = new (displayBuf) Display(mode, (char*) lfb,
                 fbTag->framebuffer_pitch);
         console->updateDisplaySize();
+        setBootFramebufferInfo(fbTag->framebuffer_addr, lfb,
+                fbTag->framebuffer_height * fbTag->framebuffer_pitch,
+                fbTag->framebuffer_pitch, mode);
     } else {
         // Without any usable display we cannot do anything.
         while (true) asm volatile ("cli; hlt");
